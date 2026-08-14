@@ -62,6 +62,76 @@ function normalizeMimeType(mime?: string, base64?: string): string {
   return "image/jpeg";
 }
 
+// Helper to pause execution
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Robust Gemini generation with automatic retry and model fallback for 503 / 429 / high demand
+async function generateWithFallback(
+  ai: GoogleGenAI,
+  params: {
+    contents: any;
+    config?: any;
+    primaryModel?: string;
+  }
+) {
+  // Valid, supported models according to the Gemini API specification
+  const modelsToTry = [
+    params.primaryModel || "gemini-3.7-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-3.1-pro-preview",
+  ];
+
+  // Remove duplicates while preserving order
+  const uniqueModels = Array.from(new Set(modelsToTry));
+
+  let lastError: any = null;
+
+  for (let mIdx = 0; mIdx < uniqueModels.length; mIdx++) {
+    const currentModel = uniqueModels[mIdx];
+    
+    // Up to 2 attempts per model with exponential backoff
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model: currentModel,
+          contents: params.contents,
+          config: params.config,
+        });
+
+        if (response && response.text) {
+          return { response, modelUsed: currentModel };
+        }
+      } catch (err: any) {
+        lastError = err;
+        const errString = String(err?.message || err || "");
+        const isTransient =
+          errString.includes("503") ||
+          errString.includes("429") ||
+          errString.includes("high demand") ||
+          errString.includes("UNAVAILABLE") ||
+          errString.includes("RESOURCE_EXHAUSTED") ||
+          errString.includes("overloaded") ||
+          errString.includes("Quota");
+
+        console.warn(
+          `[Gemini Attempt] Model "${currentModel}" (attempt ${attempt}/2) failed:`,
+          errString.substring(0, 200)
+        );
+
+        if (isTransient) {
+          // Wait before retrying or switching models
+          await delay(attempt * 400);
+        } else {
+          // If model is not found (404) or unsupported, immediately break to next model
+          break;
+        }
+      }
+    }
+  }
+
+  throw lastError || new Error("Failed to generate content across all available AI models.");
+}
+
 // Clean and safely parse JSON strings from Gemini responses
 function cleanAndParseJson(raw: string): any {
   if (!raw) throw new Error("Empty response from AI engine");
@@ -241,42 +311,40 @@ app.post("/api/ocr", async (req, res) => {
     const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, "");
     const effectiveMimeType = normalizeMimeType(mimeType, cleanBase64);
 
-    const prompt = `You are an expert OCR engine and accountant AI specializing in receipt parsing, itemized ledgers, and tax invoices.
-Analyze the provided receipt/invoice/bill image with 100% accuracy and extract ALL fields.
+    const prompt = `You are a highly resilient and expert OCR receipt and financial parser.
+Analyze the provided receipt/invoice/bill/slip image, regardless of whether it is high-resolution, low-resolution, blurry, cropped, wrinkled, dark, handwritten, a phone screenshot, or a POS slip.
 
-Instructions:
-1. "storeName": The exact store or merchant name as printed on the receipt.
-2. "storeNameEn": English translation of store name if printed in Arabic or other non-English language.
-3. "storeAddress": Address/location printed on the receipt (or empty string if not found).
+Extract and structure ALL available receipt information into JSON:
+1. "storeName": Merchant or store name (Arabic, English, or other language). If partially unreadable, make a best reasonable inference based on available text.
+2. "storeNameEn": English translation of store name if originally in Arabic or other language.
+3. "storeAddress": Address or location if visible (or empty string).
 4. "storeAddressEn": English translation of address if in Arabic.
-5. "storePhone": Merchant phone number (or empty string).
-6. "taxId": VAT/Tax registration number (e.g. 15-digit number in KSA, or Tax ID).
-7. "invoiceNo": Invoice number, receipt number, or transaction reference code.
-8. "date": Transaction date formatted as YYYY-MM-DD. If year is missing, assume current year (2025/2026).
-9. "time": Transaction time formatted as HH:MM (24-hour).
-10. "currency": Currency code (e.g., "SAR", "USD", "AED", "EUR", "GBP", "KWD", "QAR"). Default "SAR" for Saudi receipts or when "ر.س" / "SR" is shown.
-11. "category": Primary expense category, choose best match from: ["Food & Dining", "Kitchen Supplies", "Household", "Electronics", "Utilities", "Maintenance", "Ingredients", "Beverages", "Packaging", "Other"].
+5. "storePhone": Phone number if visible (or empty string).
+6. "taxId": VAT/Tax registration number (or empty string).
+7. "invoiceNo": Invoice, bill, order, or transaction reference number (or generate a standard reference like INV-xxxx if not printed).
+8. "date": Date in YYYY-MM-DD format (use current date if not visible).
+9. "time": Time in HH:MM format (24-hour).
+10. "currency": Currency code (e.g. "SAR", "USD", "AED", "EUR", "EGP", "GBP", "KWD", "QAR"). Default "SAR" if from Saudi Arabia or if currency symbol is SAR / SR / ر.س.
+11. "category": Best matching category from: ["Food & Dining", "Kitchen Supplies", "Household", "Electronics", "Utilities", "Maintenance", "Ingredients", "Beverages", "Packaging", "Other"].
 12. "paymentMethod": "Card", "Cash", "Mada", "Apple Pay", "Bank Transfer", "Online", or "Other".
-13. "items": Array of itemized products/services visible on the receipt. For EACH item:
-    - "description": Exact product/service name as printed on receipt.
-    - "descriptionEn": English translation of item description if originally in Arabic.
+13. "items": Array of itemized products or services. If individual items are not completely listed or photo is cut off, create line items for whatever is visible, or at minimum one item representing the total purchase:
+    - "description": Product name/service description as written.
+    - "descriptionEn": English translation of item description.
     - "quantity": Number of units (default 1).
-    - "unitPrice": Price per single unit (number).
+    - "unitPrice": Unit price (number).
     - "vatAmount": VAT or tax amount for this item (number, e.g. 15% VAT).
     - "totalAmount": Total line price (number).
-    - "category": Best matching category.
-    - "productChoice": Specific classification (e.g. "Pantry", "Produce", "Equipment", "Coffee", "Dairy", "Appliance", "Cutlery", "Hardware", "Cleaning", "Snacks", "Meat").
-14. Financial totals:
-    - "subtotal": Subtotal before VAT/tax (number).
-    - "vatTotal": Total VAT/tax amount (number).
-    - "grandTotal": Final paid total amount (number).
-    - "discountTotal": Total discount if shown (number, 0 if none).
-15. "notes": Brief 1-sentence summary of the invoice.
+    - "category": Matching item category.
+    - "productChoice": Short classification (e.g. "Produce", "Pantry", "Appliance", "Dairy", "Beverage", "Cleaning", "Bakery", "Meat", "Hardware", "Packaging", "General Supply").
+14. "subtotal": Subtotal before tax/VAT (number).
+15. "vatTotal": Total VAT/tax amount (number).
+16. "grandTotal": Final total amount paid or charged (number).
+17. "notes": Brief 1-sentence description or summary.
 
-Return ONLY a strictly valid JSON object matching these fields without markdown or commentary.`;
+Return strictly valid JSON only.`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.7-flash",
+    const { response, modelUsed } = await generateWithFallback(ai, {
+      primaryModel: "gemini-3.7-flash",
       contents: [
         {
           inlineData: {
@@ -291,9 +359,10 @@ Return ONLY a strictly valid JSON object matching these fields without markdown 
       },
     });
 
+    console.log(`OCR processed successfully with model: ${modelUsed}`);
     const textOutput = response.text?.trim();
     if (!textOutput) {
-      throw new Error("Gemini AI returned an empty response. Please ensure image contains clear receipt text.");
+      throw new Error("AI was unable to read text from this image. Please ensure the image contains visible receipt text.");
     }
 
     const parsed = cleanAndParseJson(textOutput);
@@ -329,7 +398,109 @@ Return ONLY a strictly valid JSON object matching these fields without markdown 
   } catch (error: any) {
     console.error("Gemini OCR extraction error:", error);
     return res.status(500).json({
-      error: error.message || "Failed to process receipt with Gemini Vision OCR. Please verify the image is readable.",
+      error: error.message || "Failed to process receipt with Gemini Vision OCR.",
+    });
+  }
+});
+
+// POST /api/parse-text: Parses raw pasted receipt text or SMS confirmation without any image requirement
+app.post("/api/parse-text", async (req, res) => {
+  try {
+    const { textContent } = req.body;
+
+    if (!textContent || typeof textContent !== "string" || textContent.trim().length === 0) {
+      return res.status(400).json({ error: "No text content provided for parsing." });
+    }
+
+    const ai = getAI();
+    if (!ai) {
+      return res.status(503).json({
+        error: "Gemini API key is not configured. Please add GEMINI_API_KEY to AI Studio Settings.",
+      });
+    }
+
+    const prompt = `You are an expert accountant AI. Parse the following pasted receipt/invoice text, order confirmation, bank SMS, or WhatsApp receipt and extract all structured data into JSON:
+
+Input text:
+"""
+${textContent.trim()}
+"""
+
+Extract the following JSON fields:
+1. "storeName": Merchant name.
+2. "storeNameEn": English merchant name.
+3. "storeAddress": Store location if mentioned (or empty).
+4. "storeAddressEn": English store location.
+5. "storePhone": Phone if mentioned.
+6. "taxId": Tax/VAT number if mentioned.
+7. "invoiceNo": Invoice number or order ID.
+8. "date": Transaction date formatted as YYYY-MM-DD.
+9. "time": Transaction time formatted as HH:MM.
+10. "currency": Currency code (e.g., "SAR", "USD", "AED", "EUR"). Default "SAR".
+11. "category": Best matching category from: ["Food & Dining", "Kitchen Supplies", "Household", "Electronics", "Utilities", "Maintenance", "Ingredients", "Beverages", "Packaging", "Other"].
+12. "paymentMethod": "Card", "Cash", "Mada", "Apple Pay", "Bank Transfer", "Online", or "Other".
+13. "items": Array of itemized products:
+    - "description": Product name
+    - "descriptionEn": English description
+    - "quantity": Number
+    - "unitPrice": Number
+    - "vatAmount": Number
+    - "totalAmount": Number
+    - "category": Category
+    - "productChoice": Specific classification
+14. "subtotal": Total before tax
+15. "vatTotal": Total VAT/tax
+16. "grandTotal": Final grand total
+17. "notes": 1-sentence note
+
+Return ONLY valid JSON.`;
+
+    const { response, modelUsed } = await generateWithFallback(ai, {
+      primaryModel: "gemini-3.7-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+      },
+    });
+
+    console.log(`Text parsed successfully with model: ${modelUsed}`);
+    const textOutput = response.text?.trim();
+    if (!textOutput) {
+      throw new Error("Unable to parse structured receipt from text.");
+    }
+
+    const parsed = cleanAndParseJson(textOutput);
+
+    if (!parsed.items || !Array.isArray(parsed.items) || parsed.items.length === 0) {
+      parsed.items = [
+        {
+          description: parsed.storeName || "Expense Item",
+          descriptionEn: parsed.storeNameEn || parsed.storeName || "Expense Item",
+          quantity: 1,
+          unitPrice: Number(parsed.grandTotal) || 0,
+          vatAmount: Number(parsed.vatTotal) || 0,
+          totalAmount: Number(parsed.grandTotal) || 0,
+          category: parsed.category || "Food & Dining",
+          productChoice: "General Supply",
+        },
+      ];
+    }
+
+    if (!parsed.subtotal && parsed.items.length > 0) {
+      parsed.subtotal = parsed.items.reduce((s: number, it: any) => s + (Number(it.unitPrice || 0) * Number(it.quantity || 1)), 0);
+    }
+    if (!parsed.vatTotal && parsed.subtotal) {
+      parsed.vatTotal = parsed.items.reduce((s: number, it: any) => s + Number(it.vatAmount || 0), 0) || Number((parsed.subtotal * 0.15).toFixed(2));
+    }
+    if (!parsed.grandTotal) {
+      parsed.grandTotal = parsed.items.reduce((s: number, it: any) => s + Number(it.totalAmount || 0), 0) || Number((Number(parsed.subtotal || 0) + Number(parsed.vatTotal || 0)).toFixed(2));
+    }
+
+    return res.json(parsed);
+  } catch (error: any) {
+    console.error("Text receipt parsing error:", error);
+    return res.status(500).json({
+      error: error.message || "Failed to parse receipt text with AI.",
     });
   }
 });
@@ -358,8 +529,8 @@ app.post("/api/translate", async (req, res) => {
       }
 
       const prompt = `Translate the following Arabic merchant/product/address text into natural professional English. Return ONLY the English translation string without any commentary or quotes:\n\n${text}`;
-      const response = await ai.models.generateContent({
-        model: "gemini-3.7-flash",
+      const { response } = await generateWithFallback(ai, {
+        primaryModel: "gemini-3.7-flash",
         contents: prompt,
       });
       return res.json({ translatedText: response.text?.trim() || text });
@@ -380,8 +551,8 @@ ${JSON.stringify(items)}
 
 Return strictly a JSON array with objects matching: { "description": "English translated text" }`;
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3.7-flash",
+      const { response } = await generateWithFallback(ai, {
+        primaryModel: "gemini-3.7-flash",
         contents: prompt,
         config: {
           responseMimeType: "application/json",

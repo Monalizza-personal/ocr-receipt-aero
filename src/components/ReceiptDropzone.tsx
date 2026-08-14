@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   UploadCloud,
   FileText,
@@ -6,10 +6,12 @@ import {
   Sparkles,
   Loader2,
   AlertCircle,
-  CheckCircle2,
+  Plus,
+  Key,
 } from "lucide-react";
 import { ExpenseReceipt } from "../types";
 import { CameraCaptureModal } from "./CameraCaptureModal";
+import { PasteTextModal } from "./PasteTextModal";
 
 interface ReceiptDropzoneProps {
   onReceiptProcessed: (receipt: ExpenseReceipt) => void;
@@ -23,6 +25,7 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
   const [progressPercent, setProgressPercent] = useState<number>(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const [isTextModalOpen, setIsTextModalOpen] = useState(false);
 
   // File drag & drop handlers
   const handleDragOver = (e: React.DragEvent) => {
@@ -49,7 +52,30 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
     }
   };
 
-  // Preprocess & optimize image for Gemini OCR (max 2048px dimension, high quality, rapid upload)
+  // Clipboard Paste Support (Ctrl+V anywhere on window / dropzone)
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      const imageFiles: File[] = [];
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf("image") !== -1) {
+          const file = items[i].getAsFile();
+          if (file) imageFiles.push(file);
+        }
+      }
+
+      if (imageFiles.length > 0) {
+        handleFiles(imageFiles);
+      }
+    };
+
+    window.addEventListener("paste", handlePaste);
+    return () => window.removeEventListener("paste", handlePaste);
+  }, []);
+
+  // Preprocess & optimize image for Gemini OCR (ultra-fast, lightweight max 1600px dimension)
   const prepareFileForOCR = (file: File): Promise<{ base64: string; mimeType: string }> => {
     return new Promise((resolve, reject) => {
       const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
@@ -65,7 +91,7 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
       reader.onload = (e) => {
         const img = new Image();
         img.onload = () => {
-          const MAX_DIM = 2048;
+          const MAX_DIM = 1600;
           let width = img.width;
           let height = img.height;
 
@@ -89,7 +115,7 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
           }
 
           ctx.drawImage(img, 0, 0, width, height);
-          const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.88);
           resolve({ base64: dataUrl, mimeType: "image/jpeg" });
         };
         img.onerror = () => {
@@ -118,7 +144,7 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
 
         const { base64, mimeType } = await prepareFileForOCR(file);
         setProgressPercent(45);
-        setProcessingStatus(`[File ${i + 1}/${files.length}] Scanning receipt with Gemini 3.7 Flash AI...`);
+        setProcessingStatus(`[File ${i + 1}/${files.length}] Scanning with Gemini Vision AI...`);
 
         const response = await fetch("/api/ocr", {
           method: "POST",
@@ -133,18 +159,25 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
         setProgressPercent(80);
         setProcessingStatus(`Structuring line items, prices, and tax numbers...`);
 
-        if (!response.ok) {
-          let errDetail = "OCR parsing failed";
-          try {
-            const errJson = await response.json();
-            errDetail = errJson.error || errJson.message || errDetail;
-          } catch {
-            errDetail = await response.text() || errDetail;
-          }
-          throw new Error(errDetail);
+        const rawText = await response.text();
+        let data: any = null;
+        try {
+          data = JSON.parse(rawText);
+        } catch {
+          data = null;
         }
 
-        const data = await response.json();
+        if (!response.ok) {
+          const errMsg =
+            data?.error ||
+            data?.message ||
+            (rawText && rawText.length < 250 ? rawText : `Server error (${response.status})`);
+          throw new Error(errMsg);
+        }
+
+        if (!data) {
+          throw new Error("Invalid response format received from server.");
+        }
 
         // Build completed ExpenseReceipt item with bilingual fields
         const newReceipt: ExpenseReceipt = {
@@ -185,102 +218,101 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
           createdAt: Date.now(),
         };
 
-        // Recalculate if totals missing
-        if (!newReceipt.subtotal && newReceipt.items.length > 0) {
-          newReceipt.subtotal = newReceipt.items.reduce((s, it) => s + (it.unitPrice * it.quantity), 0);
-          newReceipt.vatTotal = newReceipt.items.reduce((s, it) => s + (it.vatAmount || 0), 0) || Number((newReceipt.subtotal * 0.15).toFixed(2));
-          newReceipt.grandTotal = newReceipt.items.reduce((s, it) => s + (it.totalAmount || 0), 0) || Number((newReceipt.subtotal + newReceipt.vatTotal).toFixed(2));
-        }
-
         setProgressPercent(100);
         onReceiptProcessed(newReceipt);
       } catch (err: any) {
         console.error("Error processing file:", err);
         setErrorMessage(
-          `Failed to parse "${file.name}": ${err.message || "Unknown error"}. Please verify your image is readable.`
+          `Failed to parse "${file.name}": ${err.message || "Unknown error"}.`
         );
       }
     }
 
-    setTimeout(() => {
+    setIsProcessing(false);
+    setProgressPercent(0);
+    setProcessingStatus("");
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
+  // Explicit demo receipt generator
+  const handleTryDemoReceipt = async () => {
+    setIsProcessing(true);
+    setProgressPercent(30);
+    setProcessingStatus("Loading interactive demo receipt...");
+
+    try {
+      const demoOptions = ["food", "electronics", "appliances"];
+      const randomOption = demoOptions[Math.floor(Math.random() * demoOptions.length)];
+
+      const res = await fetch(`/api/demo?type=${randomOption}`);
+      const rawText = await res.text();
+      let demo: any = null;
+      try {
+        demo = JSON.parse(rawText);
+      } catch {
+        demo = null;
+      }
+
+      if (!res.ok || !demo) {
+        throw new Error(demo?.error || "Demo receipt service unavailable");
+      }
+
+      setProgressPercent(85);
+
+      const demoReceipt: ExpenseReceipt = {
+        id: "demo_" + Date.now(),
+        storeName: demo.storeNameEn || demo.storeName,
+        originalStoreName: demo.storeName,
+        storeAddress: demo.storeAddressEn || demo.storeAddress || "",
+        originalStoreAddress: demo.storeAddress || "",
+        storePhone: demo.storePhone || "",
+        taxId: demo.taxId || "300481239900003",
+        invoiceNo: demo.invoiceNo || "INV-DEMO-2025",
+        date: demo.date || new Date().toISOString().split("T")[0],
+        time: demo.time || "14:30",
+        currency: demo.currency || "SAR",
+        category: demo.category || "Food & Dining",
+        paymentMethod: demo.paymentMethod || "Card",
+        subtotal: Number(demo.subtotal) || 0,
+        vatTotal: Number(demo.vatTotal) || 0,
+        grandTotal: Number(demo.grandTotal) || 0,
+        notes: demo.notes || "Interactive sample demonstration invoice.",
+        isTranslated: Boolean(demo.storeNameEn && demo.storeName && demo.storeNameEn !== demo.storeName),
+        items: Array.isArray(demo.items)
+          ? demo.items.map((it: any, idx: number) => ({
+              id: "demo_item_" + idx + "_" + Date.now(),
+              description: it.descriptionEn || it.description,
+              originalDescription: it.description,
+              quantity: Number(it.quantity) || 1,
+              unitPrice: Number(it.unitPrice) || 0,
+              vatAmount: Number(it.vatAmount) || 0,
+              totalAmount: Number(it.totalAmount) || (Number(it.quantity) || 1) * (Number(it.unitPrice) || 0),
+              category: it.category || demo.category || "Food & Dining",
+              productChoice: it.productChoice || "Sample Supply",
+            }))
+          : [],
+        createdAt: Date.now(),
+      };
+
+      setProgressPercent(100);
+      onReceiptProcessed(demoReceipt);
+    } catch (err: any) {
+      console.error("Demo failed:", err);
+      setErrorMessage("Could not load sample receipt: " + (err.message || ""));
+    } finally {
       setIsProcessing(false);
       setProgressPercent(0);
       setProcessingStatus("");
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-    }, 600);
+    }
   };
 
-  // Demo receipt simulation trigger
-  const handleTryDemoReceipt = () => {
-    setErrorMessage(null);
-    setIsProcessing(true);
-    setProgressPercent(15);
-    setProcessingStatus("Loading Green Store sample receipt...");
-
-    setTimeout(() => {
-      setProgressPercent(40);
-      setProcessingStatus("Simulating Green Store OCR table extraction...");
-
-      setTimeout(() => {
-        setProgressPercent(75);
-        setProcessingStatus("Structuring product descriptions and 15% VAT amounts...");
-
-        setTimeout(() => {
-          setProgressPercent(100);
-          setProcessingStatus("Extraction complete!");
-
-          const demoReceipt: ExpenseReceipt = {
-            id: "rec_demo_" + Date.now(),
-            storeName: "Green Store Household Appliances",
-            originalStoreName: "متجر الأخضر للأجهزة المنزلية",
-            storeAddress: "Al-Madinah Al-Munawwarah, Al-Haraj Market, Saudi Arabia",
-            originalStoreAddress: "المدينة المنورة، سوق الحراج، المملكة العربية السعودية",
-            storePhone: "0540883720",
-            taxId: "310423670800003",
-            invoiceNo: "2025/00008/04",
-            date: new Date().toISOString().split("T")[0],
-            time: "15:45",
-            currency: "SAR",
-            category: "Household",
-            paymentMethod: "Card",
-            items: [
-              {
-                id: "item_demo_1",
-                description: "Midea Double Door Refrigerator 400L Energy Saver",
-                originalDescription: "ثلاجة ميديا بابين سعة 400 لتر موفرة للطاقة",
-                quantity: 1,
-                unitPrice: 2695.65,
-                vatAmount: 404.35,
-                totalAmount: 3100,
-                category: "Household",
-                productChoice: "Refrigeration Unit",
-              },
-            ],
-            subtotal: 2695.65,
-            vatTotal: 404.35,
-            grandTotal: 3100,
-            imageUrl: "https://images.unsplash.com/photo-1554415707-6e8cfc93fe23?w=800&auto=format&fit=crop&q=80",
-            thumbnailUrl: "https://images.unsplash.com/photo-1554415707-6e8cfc93fe23?w=160&auto=format&fit=crop&q=80",
-            notes: "Automatic extract simulation matches the attached receipt voucher.",
-            createdAt: Date.now(),
-          };
-
-          onReceiptProcessed(demoReceipt);
-          setIsProcessing(false);
-          setProgressPercent(0);
-          setProcessingStatus("");
-        }, 600);
-      }, 700);
-    }, 600);
-  };
-
-  // Camera image captured
+  // Camera capture handler
   const handleCameraCaptured = async (base64Image: string) => {
     setIsProcessing(true);
     setProgressPercent(30);
-    setProcessingStatus("Analyzing camera snapshot with Gemini 3.7 Flash AI...");
+    setProcessingStatus("Analyzing camera snapshot with Gemini Vision AI...");
 
     try {
       const response = await fetch("/api/ocr", {
@@ -289,25 +321,32 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
         body: JSON.stringify({
           imageBase64: base64Image,
           mimeType: "image/jpeg",
-          filename: "camera_snapshot.jpg",
+          filename: "camera_capture.jpg",
         }),
       });
 
+      const rawText = await response.text();
+      let data: any = null;
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        data = null;
+      }
+
       if (!response.ok) {
-        let errDetail = "Camera OCR parsing failed";
-        try {
-          const errJson = await response.json();
-          errDetail = errJson.error || errJson.message || errDetail;
-        } catch {
-          errDetail = await response.text() || errDetail;
-        }
-        throw new Error(errDetail);
+        const errMsg =
+          data?.error ||
+          data?.message ||
+          (rawText && rawText.length < 250 ? rawText : `Camera scan error (${response.status})`);
+        throw new Error(errMsg);
+      }
+
+      if (!data) {
+        throw new Error("Invalid response format received from server.");
       }
 
       setProgressPercent(85);
       setProcessingStatus("Structuring ledger records...");
-
-      const data = await response.json();
 
       const newReceipt: ExpenseReceipt = {
         id: "rec_cam_" + Date.now(),
@@ -375,7 +414,7 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/png,image/jpeg,image/jpg,image/webp,application/pdf"
+          accept="image/*,application/pdf,.heic,.heif,.webp,.avif"
           multiple
           onChange={handleFileInputChange}
           className="hidden"
@@ -414,7 +453,7 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
 
             <div className="space-y-1">
               <p className="text-sm sm:text-base font-bold text-slate-900 dark:text-slate-100">
-                Drag and drop your receipt image or PDF here, or{" "}
+                Drop any receipt image, photo, or PDF here, or{" "}
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
@@ -424,7 +463,7 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
                 </button>
               </p>
               <p className="text-xs text-slate-500 dark:text-slate-400 flex items-center justify-center gap-1.5 flex-wrap">
-                <span>Supports PNG, JPG, JPEG, WEBP and PDF formats</span>
+                <span>Accepts all images (photos, WhatsApp images, screenshots, PDFs) or press <kbd className="px-1.5 py-0.5 text-[10px] font-mono font-semibold bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-md">Ctrl+V</kbd> to paste</span>
               </p>
             </div>
 
@@ -438,6 +477,16 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
               >
                 <Camera className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
                 <span>Scan with Camera</span>
+              </button>
+
+              <button
+                id="btn-paste-text-receipt"
+                type="button"
+                onClick={() => setIsTextModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200/80 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl text-xs font-bold transition cursor-pointer border border-slate-200/60 dark:border-slate-700/60 shadow-2xs"
+              >
+                <FileText className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
+                <span>Paste Text / SMS</span>
               </button>
 
               <button
@@ -458,8 +507,13 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
       {errorMessage && (
         <div className="mt-3 p-3.5 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 rounded-xl flex items-start gap-2.5 text-rose-800 dark:text-rose-300 text-xs shadow-2xs">
           <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-          <div className="flex-1">
+          <div className="flex-1 space-y-1">
             <p className="font-semibold">{errorMessage}</p>
+            {errorMessage.toLowerCase().includes("key") && (
+              <p className="text-[11px] text-rose-700 dark:text-rose-400">
+                To use live AI vision for custom images, add your <strong>GEMINI_API_KEY</strong> in Settings &gt; Secrets, or click <strong>&quot;Try Demo Receipt&quot;</strong> / <strong>&quot;Paste Text / SMS&quot;</strong> to test immediately.
+              </p>
+            )}
           </div>
           <button
             onClick={() => setErrorMessage(null)}
@@ -476,6 +530,13 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
         isOpen={isCameraOpen}
         onClose={() => setIsCameraOpen(false)}
         onCapture={handleCameraCaptured}
+      />
+
+      {/* Paste Text / SMS Modal */}
+      <PasteTextModal
+        isOpen={isTextModalOpen}
+        onClose={() => setIsTextModalOpen(false)}
+        onReceiptProcessed={onReceiptProcessed}
       />
     </div>
   );
