@@ -1,0 +1,6 @@
+{
+  "name": "Kitchen Expenses & Receipt OCR",
+  "description": "AI-powered receipt OCR scanner and expense tracking ledger with itemized breakdown, VAT calculations, Arabic-English translation, and analytics.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
