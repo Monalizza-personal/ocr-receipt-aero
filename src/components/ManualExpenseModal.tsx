@@ -14,8 +14,6 @@ export const ManualExpenseModal: React.FC<ManualExpenseModalProps> = ({
   onClose,
   onAdd,
 }) => {
-  if (!isOpen) return null;
-
   const [storeName, setStoreName] = useState("");
   const [invoiceNo, setInvoiceNo] = useState("INV-" + Math.floor(1000 + Math.random() * 9000));
   const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
@@ -106,6 +104,8 @@ export const ManualExpenseModal: React.FC<ManualExpenseModalProps> = ({
     onAdd(newReceipt);
     onClose();
   };
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/70 backdrop-blur-xs overflow-y-auto animate-fade-in">

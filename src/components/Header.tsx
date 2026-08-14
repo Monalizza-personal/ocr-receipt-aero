@@ -45,7 +45,7 @@ export const Header: React.FC<HeaderProps> = ({
               </h1>
               <span className="inline-flex items-center gap-1 text-[10px] bg-amber-500/15 text-amber-800 dark:text-amber-300 font-extrabold uppercase tracking-wider px-2.5 py-0.5 rounded-full border border-amber-500/30 shadow-2xs">
                 <Sparkles className="w-2.5 h-2.5 text-amber-500 fill-amber-500" />
-                Gemini 3.5 AI Powered
+                Gemini 3.7 Flash AI Powered
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">

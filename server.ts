@@ -42,15 +42,55 @@ function containsArabic(text: string): boolean {
   return /[\u0600-\u06FF]/.test(text || "");
 }
 
-// Simulated fallback parser in case API key is absent or offline
+// Normalize MIME types for Gemini Vision
+function normalizeMimeType(mime?: string, base64?: string): string {
+  if (mime) {
+    const lower = mime.toLowerCase();
+    if (lower === "image/jpg" || lower === "image/pjpeg") return "image/jpeg";
+    if (lower.includes("pdf")) return "application/pdf";
+    if (lower.includes("png")) return "image/png";
+    if (lower.includes("webp")) return "image/webp";
+    if (lower.includes("heic") || lower.includes("heif")) return "image/heic";
+    if (lower.includes("jpeg")) return "image/jpeg";
+  }
+  if (base64) {
+    if (base64.startsWith("/9j/")) return "image/jpeg";
+    if (base64.startsWith("iVBORw0KGgo")) return "image/png";
+    if (base64.startsWith("JVBERi0")) return "application/pdf";
+    if (base64.startsWith("UklGR")) return "image/webp";
+  }
+  return "image/jpeg";
+}
+
+// Clean and safely parse JSON strings from Gemini responses
+function cleanAndParseJson(raw: string): any {
+  if (!raw) throw new Error("Empty response from AI engine");
+  let cleaned = raw.trim();
+  if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  }
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      const sub = cleaned.substring(firstBrace, lastBrace + 1);
+      return JSON.parse(sub);
+    }
+    throw new Error("Unable to parse structured JSON from OCR response.");
+  }
+}
+
+// Demo extraction generator (used exclusively when user requests sample demo)
 function getSimulatedExtraction(filename?: string) {
-  const isAppliances = filename && /refrig|appl|midea|green/i.test(filename);
   const isFood = filename && /food|rest|market|snack|cafe|hyper/i.test(filename);
   const isElectronics = filename && /elec|tv|sony|cable|tech/i.test(filename);
 
   if (isFood) {
     return {
       storeName: "Saudia Gourmet Market & Kitchen Supplies",
+      storeNameEn: "Saudia Gourmet Market & Kitchen Supplies",
       storeAddress: "King Abdullah Road, Medina, KSA",
       storePhone: "+966 14 848 2200",
       taxId: "300481239900003",
@@ -63,6 +103,7 @@ function getSimulatedExtraction(filename?: string) {
       items: [
         {
           description: "Fresh Arabica Coffee Beans Ground 1KG",
+          descriptionEn: "Fresh Arabica Coffee Beans Ground 1KG",
           quantity: 2,
           unitPrice: 85,
           vatAmount: 25.5,
@@ -72,6 +113,7 @@ function getSimulatedExtraction(filename?: string) {
         },
         {
           description: "Organic Cooking Olive Oil 5L",
+          descriptionEn: "Organic Cooking Olive Oil 5L",
           quantity: 1,
           unitPrice: 160,
           vatAmount: 24,
@@ -81,6 +123,7 @@ function getSimulatedExtraction(filename?: string) {
         },
         {
           description: "Commercial Food Prep Containers Set",
+          descriptionEn: "Commercial Food Prep Containers Set",
           quantity: 3,
           unitPrice: 45,
           vatAmount: 20.25,
@@ -99,6 +142,7 @@ function getSimulatedExtraction(filename?: string) {
   if (isElectronics) {
     return {
       storeName: "Digital Kitchen Equipment & Tech",
+      storeNameEn: "Digital Kitchen Equipment & Tech",
       storeAddress: "Prince Mohammad Bin Abdulaziz Rd, Al Madinah",
       storePhone: "+966 92 000 4123",
       taxId: "300051234400003",
@@ -111,6 +155,7 @@ function getSimulatedExtraction(filename?: string) {
       items: [
         {
           description: "Commercial Digital Kitchen Precision Scale",
+          descriptionEn: "Commercial Digital Kitchen Precision Scale",
           quantity: 2,
           unitPrice: 320,
           vatAmount: 96,
@@ -120,6 +165,7 @@ function getSimulatedExtraction(filename?: string) {
         },
         {
           description: "Thermal POS Kitchen Order Printer 80mm",
+          descriptionEn: "Thermal POS Kitchen Order Printer 80mm",
           quantity: 1,
           unitPrice: 580,
           vatAmount: 87,
@@ -137,8 +183,10 @@ function getSimulatedExtraction(filename?: string) {
 
   // Default Green Store receipt simulation
   return {
-    storeName: "Green Store Household & Kitchen Appliances",
-    storeAddress: "Al-Madinah Al-Munawwarah, Al-Haraj Market, Saudi Arabia",
+    storeName: "متجر الأخضر للأجهزة المنزلية",
+    storeNameEn: "Green Store Household & Kitchen Appliances",
+    storeAddress: "المدينة المنورة، سوق الحراج، المملكة العربية السعودية",
+    storeAddressEn: "Al-Madinah Al-Munawwarah, Al-Haraj Market, Saudi Arabia",
     storePhone: "0540883720",
     taxId: "310423670800003",
     invoiceNo: "2025/00008/04",
@@ -149,7 +197,8 @@ function getSimulatedExtraction(filename?: string) {
     paymentMethod: "Card",
     items: [
       {
-        description: "Midea Double Door Refrigerator 400L",
+        description: "ثلاجة ميديا بابين سعة 400 لتر موفرة للطاقة",
+        descriptionEn: "Midea Double Door Refrigerator 400L Energy Saver",
         quantity: 1,
         unitPrice: 2695.65,
         vatAmount: 404.35,
@@ -165,7 +214,13 @@ function getSimulatedExtraction(filename?: string) {
   };
 }
 
-// POST /api/ocr: Parses receipt image via Gemini 3.7 Flash or smart fallback
+// POST /api/demo: Explicit endpoint for sample receipt demonstration
+app.get("/api/demo", (req, res) => {
+  const type = req.query.type as string;
+  res.json(getSimulatedExtraction(type));
+});
+
+// POST /api/ocr: Parses actual receipt image using Gemini 3.7 Flash
 app.post("/api/ocr", async (req, res) => {
   try {
     const { imageBase64, mimeType, filename } = req.body;
@@ -176,109 +231,105 @@ app.post("/api/ocr", async (req, res) => {
 
     const ai = getAI();
     if (!ai) {
-      console.log("No GEMINI_API_KEY detected. Returning intelligent simulated receipt extraction.");
-      const mockResult = getSimulatedExtraction(filename);
-      return res.json(mockResult);
+      console.warn("GEMINI_API_KEY environment variable is not defined.");
+      return res.status(503).json({
+        error: "Gemini API key is not configured. Please ensure GEMINI_API_KEY is added in the AI Studio Settings > Secrets panel.",
+      });
     }
 
     // Clean base64 string
     const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, "");
-    const effectiveMimeType = mimeType || (imageBase64.startsWith("data:image/png") ? "image/png" : "image/jpeg");
+    const effectiveMimeType = normalizeMimeType(mimeType, cleanBase64);
 
-    const prompt = `You are an expert OCR receipt and financial invoice parsing engine.
-Analyze the provided receipt/invoice image and extract all structured data accurately.
+    const prompt = `You are an expert OCR engine and accountant AI specializing in receipt parsing, itemized ledgers, and tax invoices.
+Analyze the provided receipt/invoice/bill image with 100% accuracy and extract ALL fields.
 
-Rules:
-1. Extract the merchant or store name ('storeName'). Keep original language (Arabic/English/etc).
-2. Extract store address ('storeAddress') and phone number ('storePhone') if present.
-3. Extract tax/VAT registration number ('taxId'), receipt/invoice number ('invoiceNo'), date (YYYY-MM-DD), time (HH:MM), and currency (e.g. SAR, USD, EUR, AED). Default currency to "SAR" if from Saudi Arabia or symbol is ر.س / SAR.
-4. Extract all itemized products with:
-   - 'description': product or service description
-   - 'quantity': number (default 1)
-   - 'unitPrice': price per unit before or after tax
-   - 'vatAmount': tax or VAT for this line item (e.g., 15% VAT in KSA)
-   - 'totalAmount': total line price
-   - 'category': choose best fit from ["Food & Dining", "Kitchen Supplies", "Household", "Electronics", "Utilities", "Maintenance", "Ingredients", "Beverages", "Packaging", "Other"]
-   - 'productChoice': short specific classification or choice (e.g., "Pantry", "Appliance", "Fresh Produce", "Hardware", "Packaging", "Dairy", "Spices", "Cutlery", "Cleaning")
-5. Extract financial totals:
-   - 'subtotal': total before VAT/tax (number)
-   - 'vatTotal': total VAT/tax amount (number)
-   - 'grandTotal': final total amount paid or due (number)
-6. Extract 'paymentMethod' ('Card', 'Cash', 'Bank Transfer', 'Apple Pay', 'Online', 'Other').
-7. Extract primary receipt 'category'.
-8. If the receipt has Arabic text, maintain exact Arabic characters. Do NOT invent data if not visible, use plausible defaults based on line items if subtotal/vat needs calculation.
+Instructions:
+1. "storeName": The exact store or merchant name as printed on the receipt.
+2. "storeNameEn": English translation of store name if printed in Arabic or other non-English language.
+3. "storeAddress": Address/location printed on the receipt (or empty string if not found).
+4. "storeAddressEn": English translation of address if in Arabic.
+5. "storePhone": Merchant phone number (or empty string).
+6. "taxId": VAT/Tax registration number (e.g. 15-digit number in KSA, or Tax ID).
+7. "invoiceNo": Invoice number, receipt number, or transaction reference code.
+8. "date": Transaction date formatted as YYYY-MM-DD. If year is missing, assume current year (2025/2026).
+9. "time": Transaction time formatted as HH:MM (24-hour).
+10. "currency": Currency code (e.g., "SAR", "USD", "AED", "EUR", "GBP", "KWD", "QAR"). Default "SAR" for Saudi receipts or when "ر.س" / "SR" is shown.
+11. "category": Primary expense category, choose best match from: ["Food & Dining", "Kitchen Supplies", "Household", "Electronics", "Utilities", "Maintenance", "Ingredients", "Beverages", "Packaging", "Other"].
+12. "paymentMethod": "Card", "Cash", "Mada", "Apple Pay", "Bank Transfer", "Online", or "Other".
+13. "items": Array of itemized products/services visible on the receipt. For EACH item:
+    - "description": Exact product/service name as printed on receipt.
+    - "descriptionEn": English translation of item description if originally in Arabic.
+    - "quantity": Number of units (default 1).
+    - "unitPrice": Price per single unit (number).
+    - "vatAmount": VAT or tax amount for this item (number, e.g. 15% VAT).
+    - "totalAmount": Total line price (number).
+    - "category": Best matching category.
+    - "productChoice": Specific classification (e.g. "Pantry", "Produce", "Equipment", "Coffee", "Dairy", "Appliance", "Cutlery", "Hardware", "Cleaning", "Snacks", "Meat").
+14. Financial totals:
+    - "subtotal": Subtotal before VAT/tax (number).
+    - "vatTotal": Total VAT/tax amount (number).
+    - "grandTotal": Final paid total amount (number).
+    - "discountTotal": Total discount if shown (number, 0 if none).
+15. "notes": Brief 1-sentence summary of the invoice.
 
-Return strictly valid JSON adhering to the specified schema.`;
+Return ONLY a strictly valid JSON object matching these fields without markdown or commentary.`;
 
     const response = await ai.models.generateContent({
       model: "gemini-3.7-flash",
-      contents: {
-        parts: [
-          {
-            inlineData: {
-              data: cleanBase64,
-              mimeType: effectiveMimeType,
-            },
+      contents: [
+        {
+          inlineData: {
+            data: cleanBase64,
+            mimeType: effectiveMimeType,
           },
-          { text: prompt },
-        ],
-      },
+        },
+        { text: prompt },
+      ],
       config: {
         responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            storeName: { type: Type.STRING, description: "Name of the merchant/store" },
-            storeAddress: { type: Type.STRING, description: "Store location or address" },
-            storePhone: { type: Type.STRING, description: "Store phone number" },
-            taxId: { type: Type.STRING, description: "VAT/Tax ID number" },
-            invoiceNo: { type: Type.STRING, description: "Invoice or receipt reference code" },
-            date: { type: Type.STRING, description: "Transaction date in YYYY-MM-DD" },
-            time: { type: Type.STRING, description: "Transaction time in HH:MM" },
-            currency: { type: Type.STRING, description: "Currency code e.g. SAR, USD, EUR" },
-            category: { type: Type.STRING, description: "General category of the expense" },
-            paymentMethod: { type: Type.STRING, description: "Payment method" },
-            subtotal: { type: Type.NUMBER, description: "Subtotal amount before tax" },
-            vatTotal: { type: Type.NUMBER, description: "Total VAT / tax amount" },
-            grandTotal: { type: Type.NUMBER, description: "Grand total amount" },
-            notes: { type: Type.STRING, description: "Brief summary or note about the receipt" },
-            items: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  description: { type: Type.STRING, description: "Product description" },
-                  quantity: { type: Type.NUMBER, description: "Item quantity" },
-                  unitPrice: { type: Type.NUMBER, description: "Unit price" },
-                  vatAmount: { type: Type.NUMBER, description: "VAT amount for this item" },
-                  totalAmount: { type: Type.NUMBER, description: "Total line amount" },
-                  category: { type: Type.STRING, description: "Item category" },
-                  productChoice: { type: Type.STRING, description: "Item classification" },
-                },
-                required: ["description", "quantity", "unitPrice", "totalAmount"],
-              },
-            },
-          },
-          required: ["storeName", "grandTotal", "items"],
-        },
       },
     });
 
     const textOutput = response.text?.trim();
     if (!textOutput) {
-      console.warn("Empty Gemini response, falling back to simulated extraction");
-      return res.json(getSimulatedExtraction(filename));
+      throw new Error("Gemini AI returned an empty response. Please ensure image contains clear receipt text.");
     }
 
-    const parsedData = JSON.parse(textOutput);
-    return res.json(parsedData);
+    const parsed = cleanAndParseJson(textOutput);
+
+    // Sanitize and calculate any missing totals
+    if (!parsed.items || !Array.isArray(parsed.items) || parsed.items.length === 0) {
+      parsed.items = [
+        {
+          description: parsed.storeName || "Scanned Receipt Item",
+          descriptionEn: parsed.storeNameEn || parsed.storeName || "Scanned Receipt Item",
+          quantity: 1,
+          unitPrice: Number(parsed.grandTotal) || 0,
+          vatAmount: Number(parsed.vatTotal) || 0,
+          totalAmount: Number(parsed.grandTotal) || 0,
+          category: parsed.category || "Food & Dining",
+          productChoice: "General Supply",
+        },
+      ];
+    }
+
+    // Ensure numeric totals are well-formed
+    if (!parsed.subtotal && parsed.items.length > 0) {
+      parsed.subtotal = parsed.items.reduce((s: number, it: any) => s + (Number(it.unitPrice || 0) * Number(it.quantity || 1)), 0);
+    }
+    if (!parsed.vatTotal && parsed.subtotal) {
+      parsed.vatTotal = parsed.items.reduce((s: number, it: any) => s + Number(it.vatAmount || 0), 0) || Number((parsed.subtotal * 0.15).toFixed(2));
+    }
+    if (!parsed.grandTotal) {
+      parsed.grandTotal = parsed.items.reduce((s: number, it: any) => s + Number(it.totalAmount || 0), 0) || Number((Number(parsed.subtotal || 0) + Number(parsed.vatTotal || 0)).toFixed(2));
+    }
+
+    return res.json(parsed);
   } catch (error: any) {
     console.error("Gemini OCR extraction error:", error);
-    // Graceful fallback to avoid blocking user flow
-    const fallback = getSimulatedExtraction(req.body?.filename);
-    return res.json({
-      ...fallback,
-      _warning: "AI vision service encountered a temporary error; processed via local heuristic parser.",
+    return res.status(500).json({
+      error: error.message || "Failed to process receipt with Gemini Vision OCR. Please verify the image is readable.",
     });
   }
 });
@@ -347,7 +398,7 @@ Return strictly a JSON array with objects matching: { "description": "English tr
         },
       });
 
-      const translatedItems = JSON.parse(response.text?.trim() || "[]");
+      const translatedItems = cleanAndParseJson(response.text?.trim() || "[]");
       return res.json({ translatedItems });
     }
 

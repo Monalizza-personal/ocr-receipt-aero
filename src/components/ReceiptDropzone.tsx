@@ -49,13 +49,56 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
     }
   };
 
-  // Convert File to Base64
-  const fileToBase64 = (file: File): Promise<string> => {
+  // Preprocess & optimize image for Gemini OCR (max 2048px dimension, high quality, rapid upload)
+  const prepareFileForOCR = (file: File): Promise<{ base64: string; mimeType: string }> => {
     return new Promise((resolve, reject) => {
+      const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+      if (isPdf) {
+        const reader = new FileReader();
+        reader.onload = () => resolve({ base64: reader.result as string, mimeType: "application/pdf" });
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+        return;
+      }
+
       const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const MAX_DIM = 2048;
+          let width = img.width;
+          let height = img.height;
+
+          if (width > MAX_DIM || height > MAX_DIM) {
+            if (width > height) {
+              height = Math.round((height * MAX_DIM) / width);
+              width = MAX_DIM;
+            } else {
+              width = Math.round((width * MAX_DIM) / height);
+              height = MAX_DIM;
+            }
+          }
+
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            resolve({ base64: e.target?.result as string, mimeType: file.type || "image/jpeg" });
+            return;
+          }
+
+          ctx.drawImage(img, 0, 0, width, height);
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+          resolve({ base64: dataUrl, mimeType: "image/jpeg" });
+        };
+        img.onerror = () => {
+          resolve({ base64: e.target?.result as string, mimeType: file.type || "image/jpeg" });
+        };
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = reject;
       reader.readAsDataURL(file);
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = (error) => reject(error);
     });
   };
 
@@ -67,59 +110,66 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      const isPdf = file.type === "application/pdf" || file.name.endsWith(".pdf");
+      const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
 
       try {
         setProcessingStatus(`[File ${i + 1}/${files.length}] Reading "${file.name}"...`);
         setProgressPercent(20);
 
-        const base64Data = await fileToBase64(file);
+        const { base64, mimeType } = await prepareFileForOCR(file);
         setProgressPercent(45);
-        setProcessingStatus(`[File ${i + 1}/${files.length}] Analyzing receipt with Gemini AI...`);
+        setProcessingStatus(`[File ${i + 1}/${files.length}] Scanning receipt with Gemini 3.7 Flash AI...`);
 
         const response = await fetch("/api/ocr", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            imageBase64: base64Data,
-            mimeType: file.type || (isPdf ? "application/pdf" : "image/jpeg"),
+            imageBase64: base64,
+            mimeType: mimeType,
             filename: file.name,
           }),
         });
 
         setProgressPercent(80);
-        setProcessingStatus(`Structuring ledger lines and tax numbers...`);
+        setProcessingStatus(`Structuring line items, prices, and tax numbers...`);
 
         if (!response.ok) {
-          const errText = await response.text();
-          throw new Error(errText || "OCR parsing failed");
+          let errDetail = "OCR parsing failed";
+          try {
+            const errJson = await response.json();
+            errDetail = errJson.error || errJson.message || errDetail;
+          } catch {
+            errDetail = await response.text() || errDetail;
+          }
+          throw new Error(errDetail);
         }
 
         const data = await response.json();
 
-        // Build completed ExpenseReceipt item
+        // Build completed ExpenseReceipt item with bilingual fields
         const newReceipt: ExpenseReceipt = {
           id: "rec_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
-          storeName: data.storeName || "Scanned Store Merchant",
-          originalStoreName: data.storeName,
-          storeAddress: data.storeAddress || "",
+          storeName: data.storeNameEn || data.storeName || "Scanned Store Merchant",
+          originalStoreName: data.storeName || data.storeNameEn,
+          storeAddress: data.storeAddressEn || data.storeAddress || "",
           originalStoreAddress: data.storeAddress || "",
           storePhone: data.storePhone || "",
           taxId: data.taxId || "",
           invoiceNo: data.invoiceNo || "INV-" + Math.floor(1000 + Math.random() * 9000),
           date: data.date || new Date().toISOString().split("T")[0],
-          time: data.time || "12:00",
+          time: data.time || new Date().toTimeString().substring(0, 5),
           currency: data.currency || "SAR",
           category: data.category || "Food & Dining",
           paymentMethod: data.paymentMethod || "Card",
           subtotal: Number(data.subtotal) || 0,
           vatTotal: Number(data.vatTotal) || 0,
           grandTotal: Number(data.grandTotal) || 0,
-          notes: data.notes || `Processed via OCR scan on ${new Date().toLocaleDateString()}`,
+          notes: data.notes || `AI-scanned receipt with ${data.items?.length || 0} line items`,
+          isTranslated: Boolean(data.storeNameEn && data.storeName && data.storeNameEn !== data.storeName),
           items: Array.isArray(data.items)
             ? data.items.map((it: any, idx: number) => ({
                 id: "item_" + idx + "_" + Date.now(),
-                description: it.description || "Unlabeled Product Item",
+                description: it.descriptionEn || it.description || "Unlabeled Item",
                 originalDescription: it.description,
                 quantity: Number(it.quantity) || 1,
                 unitPrice: Number(it.unitPrice) || 0,
@@ -129,8 +179,8 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
                 productChoice: it.productChoice || "General Supply",
               }))
             : [],
-          imageUrl: isPdf ? undefined : base64Data,
-          thumbnailUrl: isPdf ? undefined : base64Data,
+          imageUrl: isPdf ? undefined : base64,
+          thumbnailUrl: isPdf ? undefined : base64,
           isPdf: isPdf,
           createdAt: Date.now(),
         };
@@ -147,7 +197,7 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
       } catch (err: any) {
         console.error("Error processing file:", err);
         setErrorMessage(
-          `Failed to parse "${file.name}": ${err.message || "Unknown error"}. Please ensure image is clear.`
+          `Failed to parse "${file.name}": ${err.message || "Unknown error"}. Please verify your image is readable.`
         );
       }
     }
@@ -230,7 +280,7 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
   const handleCameraCaptured = async (base64Image: string) => {
     setIsProcessing(true);
     setProgressPercent(30);
-    setProcessingStatus("Analyzing camera snapshot with Gemini OCR...");
+    setProcessingStatus("Analyzing camera snapshot with Gemini 3.7 Flash AI...");
 
     try {
       const response = await fetch("/api/ocr", {
@@ -243,22 +293,33 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
         }),
       });
 
-      setProgressPercent(80);
-      setProcessingStatus("Finalizing ledger extraction...");
+      if (!response.ok) {
+        let errDetail = "Camera OCR parsing failed";
+        try {
+          const errJson = await response.json();
+          errDetail = errJson.error || errJson.message || errDetail;
+        } catch {
+          errDetail = await response.text() || errDetail;
+        }
+        throw new Error(errDetail);
+      }
+
+      setProgressPercent(85);
+      setProcessingStatus("Structuring ledger records...");
 
       const data = await response.json();
 
       const newReceipt: ExpenseReceipt = {
         id: "rec_cam_" + Date.now(),
-        storeName: data.storeName || "Camera Scanned Store",
-        originalStoreName: data.storeName,
-        storeAddress: data.storeAddress || "",
+        storeName: data.storeNameEn || data.storeName || "Camera Scanned Store",
+        originalStoreName: data.storeName || data.storeNameEn,
+        storeAddress: data.storeAddressEn || data.storeAddress || "",
         originalStoreAddress: data.storeAddress || "",
         storePhone: data.storePhone || "",
         taxId: data.taxId || "",
         invoiceNo: data.invoiceNo || "CAM-" + Math.floor(1000 + Math.random() * 9000),
         date: data.date || new Date().toISOString().split("T")[0],
-        time: data.time || "12:00",
+        time: data.time || new Date().toTimeString().substring(0, 5),
         currency: data.currency || "SAR",
         category: data.category || "Food & Dining",
         paymentMethod: data.paymentMethod || "Card",
@@ -266,17 +327,18 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
         vatTotal: Number(data.vatTotal) || 0,
         grandTotal: Number(data.grandTotal) || 0,
         notes: data.notes || "Captured directly via device camera",
+        isTranslated: Boolean(data.storeNameEn && data.storeName && data.storeNameEn !== data.storeName),
         items: Array.isArray(data.items)
           ? data.items.map((it: any, idx: number) => ({
               id: "item_cam_" + idx + "_" + Date.now(),
-              description: it.description || "Scanned item",
+              description: it.descriptionEn || it.description || "Scanned item",
               originalDescription: it.description,
               quantity: Number(it.quantity) || 1,
               unitPrice: Number(it.unitPrice) || 0,
               vatAmount: Number(it.vatAmount) || 0,
               totalAmount: Number(it.totalAmount) || (Number(it.quantity) || 1) * (Number(it.unitPrice) || 0),
               category: it.category || data.category || "Food & Dining",
-              productChoice: it.productChoice || "General",
+              productChoice: it.productChoice || "General Supply",
             }))
           : [],
         imageUrl: base64Image,
@@ -288,7 +350,7 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({ onReceiptProce
       onReceiptProcessed(newReceipt);
     } catch (err: any) {
       console.error("Camera OCR error:", err);
-      setErrorMessage("Could not parse camera snapshot. Please try again with better lighting.");
+      setErrorMessage(`Camera OCR Failed: ${err.message || "Could not parse camera snapshot."}`);
     } finally {
       setIsProcessing(false);
       setProgressPercent(0);

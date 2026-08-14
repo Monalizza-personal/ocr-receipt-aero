@@ -33,9 +33,20 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
   onClose,
   onSave,
 }) => {
-  if (!receipt) return null;
-
-  const [formData, setFormData] = useState<ExpenseReceipt>({ ...receipt });
+  const [formData, setFormData] = useState<ExpenseReceipt>(() => receipt || {
+    id: "",
+    storeName: "",
+    invoiceNo: "",
+    date: "",
+    time: "",
+    category: "Food & Dining",
+    paymentMethod: "Card",
+    currency: "SAR",
+    items: [],
+    subtotal: 0,
+    vatTotal: 0,
+    grandTotal: 0,
+  });
   const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES);
   const [productChoices, setProductChoices] = useState<string[]>(DEFAULT_PRODUCT_CHOICES);
   const [isTranslating, setIsTranslating] = useState(false);
@@ -47,7 +58,9 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
   const [activeTab, setActiveTab] = useState<"details" | "image">("details");
 
   useEffect(() => {
-    setFormData({ ...receipt });
+    if (receipt) {
+      setFormData({ ...receipt });
+    }
   }, [receipt]);
 
   // Check if current text contains Arabic
@@ -225,6 +238,8 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
   const handleSaveModal = () => {
     onSave(formData);
   };
+
+  if (!receipt) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/70 backdrop-blur-xs overflow-y-auto animate-fade-in">
