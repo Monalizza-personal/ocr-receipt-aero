@@ -65,16 +65,25 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
 
   // Check if current text contains Arabic
   const hasArabic =
-    containsArabic(formData.storeName) ||
-    containsArabic(formData.storeAddress) ||
-    formData.items.some((it) => containsArabic(it.description));
+    containsArabic(formData.storeName || "") ||
+    containsArabic(formData.storeAddress || "") ||
+    (Array.isArray(formData.items) &&
+      formData.items.some((it) => containsArabic(it?.description || "")));
 
   // Recalculate totals from items
-  const recalculateFromItems = (items: ExpenseItem[]) => {
-    const subtotal = items.reduce((acc, it) => acc + (Number(it.unitPrice) || 0) * (Number(it.quantity) || 1), 0);
-    const vat = items.reduce((acc, it) => acc + (Number(it.vatAmount) || 0), 0);
-    const grandTotal = items.reduce(
-      (acc, it) => acc + (Number(it.totalAmount) || (Number(it.unitPrice) || 0) * (Number(it.quantity) || 1) + (Number(it.vatAmount) || 0)),
+  const recalculateFromItems = (items: ExpenseItem[] = []) => {
+    const safeItems = Array.isArray(items) ? items : [];
+    const subtotal = safeItems.reduce(
+      (acc, it) => acc + (Number(it.unitPrice) || 0) * (Number(it.quantity) || 1),
+      0
+    );
+    const vat = safeItems.reduce((acc, it) => acc + (Number(it.vatAmount) || 0), 0);
+    const grandTotal = safeItems.reduce(
+      (acc, it) =>
+        acc +
+        (Number(it.totalAmount) ||
+          (Number(it.unitPrice) || 0) * (Number(it.quantity) || 1) +
+            (Number(it.vatAmount) || 0)),
       0
     );
 

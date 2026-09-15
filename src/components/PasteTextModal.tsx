@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { X, Sparkles, Loader2, FileText, Clipboard, AlertCircle } from "lucide-react";
 import { ExpenseReceipt } from "../types";
+import { parseTextClientSide } from "../lib/clientGeminiFallback";
 
 interface PasteTextModalProps {
   isOpen: boolean;
@@ -29,30 +30,39 @@ export const PasteTextModal: React.FC<PasteTextModalProps> = ({
     setError(null);
 
     try {
-      const response = await fetch("/api/parse-text", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ textContent: textContent.trim() }),
-      });
-
-      const rawText = await response.text();
       let data: any = null;
-      try {
-        data = JSON.parse(rawText);
-      } catch {
-        data = null;
-      }
 
-      if (!response.ok) {
-        const errDetail =
-          data?.error ||
-          data?.message ||
-          (rawText && rawText.length < 250 ? rawText : `Text parsing failed (${response.status})`);
-        throw new Error(errDetail);
+      try {
+        const response = await fetch("/api/parse-text", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ textContent: textContent.trim() }),
+        });
+
+        const rawText = await response.text();
+        try {
+          data = JSON.parse(rawText);
+        } catch {
+          data = null;
+        }
+
+        if (!response.ok || !data) {
+          if (response.status === 404 || (rawText && rawText.includes("NOT_FOUND"))) {
+            data = await parseTextClientSide(textContent.trim());
+          } else {
+            const errDetail =
+              data?.error ||
+              data?.message ||
+              (rawText && rawText.length < 250 ? rawText : `Text parsing failed (${response.status})`);
+            throw new Error(errDetail);
+          }
+        }
+      } catch (fetchErr: any) {
+        data = await parseTextClientSide(textContent.trim());
       }
 
       if (!data) {
-        throw new Error("Invalid response format received from server.");
+        throw new Error("Unable to parse text content.");
       }
 
       const newReceipt: ExpenseReceipt = {

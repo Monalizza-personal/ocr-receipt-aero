@@ -2,6 +2,7 @@ import React from "react";
 import {
   Sparkles,
   Download,
+  Upload,
   RotateCcw,
   Trash2,
   Receipt,
@@ -18,6 +19,7 @@ interface HeaderProps {
   onResetSeed: () => void;
   onClearLedger: () => void;
   onOpenManualModal: () => void;
+  onOpenImportModal: () => void;
   isDarkMode: boolean;
   onToggleDarkMode: () => void;
 }
@@ -27,6 +29,7 @@ export const Header: React.FC<HeaderProps> = ({
   onResetSeed,
   onClearLedger,
   onOpenManualModal,
+  onOpenImportModal,
   isDarkMode,
   onToggleDarkMode,
 }) => {
@@ -45,11 +48,11 @@ export const Header: React.FC<HeaderProps> = ({
               </h1>
               <span className="inline-flex items-center gap-1 text-[10px] bg-amber-500/15 text-amber-800 dark:text-amber-300 font-extrabold uppercase tracking-wider px-2.5 py-0.5 rounded-full border border-amber-500/30 shadow-2xs">
                 <Sparkles className="w-2.5 h-2.5 text-amber-500 fill-amber-500" />
-                Gemini 3.7 Flash AI Powered
+                Gemini 3.8 Flash AI Powered
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Drag-and-drop receipt scans to instantly auto-populate your searchable expense tracking ledger.
+              Drag-and-drop receipt scans or import CSV/JSON to instantly auto-populate your expense ledger.
             </p>
           </div>
         </div>
@@ -66,6 +69,18 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <PlusCircle className="w-3.5 h-3.5" />
             <span>+ Manual Entry</span>
+          </button>
+
+          {/* Import Receipts Button */}
+          <button
+            id="btn-import-receipts"
+            onClick={onOpenImportModal}
+            type="button"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-violet-50 hover:bg-violet-100/80 dark:bg-violet-950/40 dark:hover:bg-violet-900/60 text-violet-800 dark:text-violet-300 rounded-xl text-xs font-bold border border-violet-200/80 dark:border-violet-800/50 transition cursor-pointer shadow-2xs"
+            title="Import receipts or line items from CSV or JSON file"
+          >
+            <Upload className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
+            <span>Import (CSV / JSON)</span>
           </button>
 
           {/* Export Receipts CSV */}

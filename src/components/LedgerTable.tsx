@@ -54,33 +54,46 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
   // Filter receipts
   const filteredReceipts = receipts
     .filter((r) => {
+      const sName = (r.storeName || "").toLowerCase();
+      const inv = (r.invoiceNo || "").toLowerCase();
+      const notes = (r.notes || "").toLowerCase();
+      const sTerm = searchTerm.toLowerCase();
+
       const matchSearch =
         searchTerm === "" ||
-        r.storeName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (r.invoiceNo && r.invoiceNo.toLowerCase().includes(searchTerm.toLowerCase())) ||
-        (r.notes && r.notes.toLowerCase().includes(searchTerm.toLowerCase())) ||
-        (r.items && r.items.some((it) => it.description.toLowerCase().includes(searchTerm.toLowerCase())));
+        sName.includes(sTerm) ||
+        inv.includes(sTerm) ||
+        notes.includes(sTerm) ||
+        (Array.isArray(r.items) &&
+          r.items.some((it) => (it?.description || "").toLowerCase().includes(sTerm)));
 
       const matchCat = selectedCategory === "All Categories" || r.category === selectedCategory;
 
       return matchSearch && matchCat;
     })
     .sort((a, b) => {
-      if (sortBy === "date-desc") return new Date(b.date).getTime() - new Date(a.date).getTime();
-      if (sortBy === "date-asc") return new Date(a.date).getTime() - new Date(b.date).getTime();
-      if (sortBy === "amount-desc") return (b.grandTotal || 0) - (a.grandTotal || 0);
-      if (sortBy === "amount-asc") return (a.grandTotal || 0) - (b.grandTotal || 0);
+      const timeA = a.date ? new Date(a.date).getTime() : 0;
+      const timeB = b.date ? new Date(b.date).getTime() : 0;
+      if (sortBy === "date-desc") return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
+      if (sortBy === "date-asc") return (isNaN(timeA) ? 0 : timeA) - (isNaN(timeB) ? 0 : timeB);
+      if (sortBy === "amount-desc") return (Number(b.grandTotal) || 0) - (Number(a.grandTotal) || 0);
+      if (sortBy === "amount-asc") return (Number(a.grandTotal) || 0) - (Number(b.grandTotal) || 0);
       return 0;
     });
 
   // Filter line items
   const filteredLineItems = allLineItems
     .filter((it) => {
+      const desc = (it.description || "").toLowerCase();
+      const sName = (it.storeName || "").toLowerCase();
+      const inv = (it.invoiceNo || "").toLowerCase();
+      const sTerm = searchTerm.toLowerCase();
+
       const matchSearch =
         searchTerm === "" ||
-        it.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        it.storeName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (it.invoiceNo && it.invoiceNo.toLowerCase().includes(searchTerm.toLowerCase()));
+        desc.includes(sTerm) ||
+        sName.includes(sTerm) ||
+        inv.includes(sTerm);
 
       const matchCat =
         selectedCategory === "All Categories" || (it.category || "General") === selectedCategory;
@@ -91,10 +104,12 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
       return matchSearch && matchCat && matchChoice;
     })
     .sort((a, b) => {
-      if (sortBy === "date-desc") return new Date(b.date).getTime() - new Date(a.date).getTime();
-      if (sortBy === "date-asc") return new Date(a.date).getTime() - new Date(b.date).getTime();
-      if (sortBy === "amount-desc") return (b.totalAmount || 0) - (a.totalAmount || 0);
-      if (sortBy === "amount-asc") return (a.totalAmount || 0) - (b.totalAmount || 0);
+      const timeA = a.date ? new Date(a.date).getTime() : 0;
+      const timeB = b.date ? new Date(b.date).getTime() : 0;
+      if (sortBy === "date-desc") return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
+      if (sortBy === "date-asc") return (isNaN(timeA) ? 0 : timeA) - (isNaN(timeB) ? 0 : timeB);
+      if (sortBy === "amount-desc") return (Number(b.totalAmount) || 0) - (Number(a.totalAmount) || 0);
+      if (sortBy === "amount-asc") return (Number(a.totalAmount) || 0) - (Number(b.totalAmount) || 0);
       return 0;
     });
 

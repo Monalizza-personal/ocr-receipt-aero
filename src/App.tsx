@@ -4,7 +4,6 @@
  */
 
 import React, { useState, useEffect } from "react";
-import confetti from "canvas-confetti";
 import { Header } from "./components/Header";
 import { MetricCards } from "./components/MetricCards";
 import { ReceiptDropzone } from "./components/ReceiptDropzone";
@@ -12,6 +11,7 @@ import { AnalyticsCharts } from "./components/AnalyticsCharts";
 import { LedgerTable } from "./components/LedgerTable";
 import { ReceiptDetailModal } from "./components/ReceiptDetailModal";
 import { ManualExpenseModal } from "./components/ManualExpenseModal";
+import { ImportReceiptsModal } from "./components/ImportReceiptsModal";
 import { ExpenseReceipt } from "./types";
 import { INITIAL_RECEIPTS } from "./data/seedData";
 
@@ -21,6 +21,7 @@ export default function App() {
   const [receipts, setReceipts] = useState<ExpenseReceipt[]>([]);
   const [selectedReceipt, setSelectedReceipt] = useState<ExpenseReceipt | null>(null);
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(() => {
     return localStorage.getItem("theme") === "dark";
   });
@@ -55,35 +56,55 @@ export default function App() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_RECEIPTS));
   }, []);
 
+  // Helper to persist receipts to localStorage safely without exceeding quota or freezing renderer
+  const safePersistReceipts = (list: ExpenseReceipt[]) => {
+    try {
+      // Strip out huge blob URLs or massive base64 strings so localStorage stays lightweight (<100KB)
+      const sanitized = list.map((r) => ({
+        ...r,
+        imageUrl: r.imageUrl?.startsWith("http") ? r.imageUrl : undefined,
+        thumbnailUrl: r.thumbnailUrl?.startsWith("http") ? r.thumbnailUrl : undefined,
+      }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
+    } catch (err) {
+      console.warn("Storage quota exceeded or storage unavailable; continuing in-memory:", err);
+    }
+  };
+
   // Update storage helper
   const saveReceiptsToStorage = (updated: ExpenseReceipt[]) => {
     setReceipts(updated);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    safePersistReceipts(updated);
   };
 
   // Receipt Processed Handler (From OCR or Demo)
   const handleReceiptProcessed = (newReceipt: ExpenseReceipt) => {
-    const updated = [newReceipt, ...receipts];
-    saveReceiptsToStorage(updated);
+    setReceipts((prev) => {
+      const updated = [newReceipt, ...prev];
+      safePersistReceipts(updated);
+      return updated;
+    });
     setSelectedReceipt(newReceipt);
+  };
 
-    // Celebratory confetti on extraction
-    try {
-      confetti({
-        particleCount: 45,
-        spread: 60,
-        origin: { y: 0.6 },
-        colors: ["#10b981", "#3b82f6", "#f59e0b"],
-      });
-    } catch {
-      // Ignored if canvas-confetti is not loaded
-    }
+  // Batch Receipt Processed Handler (From CSV/JSON or multi-file uploads)
+  const handleMultipleReceiptsProcessed = (newReceipts: ExpenseReceipt[]) => {
+    if (newReceipts.length === 0) return;
+    setReceipts((prev) => {
+      const updated = [...newReceipts, ...prev];
+      safePersistReceipts(updated);
+      return updated;
+    });
+    setSelectedReceipt(newReceipts[0]);
   };
 
   // Update single receipt
   const handleUpdateReceipt = (id: string, updated: ExpenseReceipt) => {
-    const next = receipts.map((r) => (r.id === id ? updated : r));
-    saveReceiptsToStorage(next);
+    setReceipts((prev) => {
+      const next = prev.map((r) => (r.id === id ? updated : r));
+      safePersistReceipts(next);
+      return next;
+    });
     if (selectedReceipt?.id === id) {
       setSelectedReceipt(updated);
     }
@@ -91,8 +112,11 @@ export default function App() {
 
   // Delete single receipt
   const handleDeleteReceipt = (id: string) => {
-    const next = receipts.filter((r) => r.id !== id);
-    saveReceiptsToStorage(next);
+    setReceipts((prev) => {
+      const next = prev.filter((r) => r.id !== id);
+      safePersistReceipts(next);
+      return next;
+    });
     if (selectedReceipt?.id === id) {
       setSelectedReceipt(null);
     }
@@ -124,8 +148,24 @@ export default function App() {
 
   // Manual expense added
   const handleAddManualExpense = (manualExpense: ExpenseReceipt) => {
-    const updated = [manualExpense, ...receipts];
-    saveReceiptsToStorage(updated);
+    setReceipts((prev) => {
+      const updated = [manualExpense, ...prev];
+      safePersistReceipts(updated);
+      return updated;
+    });
+    setSelectedReceipt(manualExpense);
+  };
+
+  // Import receipts from CSV or JSON
+  const handleImportSuccess = (importedList: ExpenseReceipt[], replaceAll: boolean) => {
+    setReceipts((prev) => {
+      const updated = replaceAll ? importedList : [...importedList, ...prev];
+      safePersistReceipts(updated);
+      return updated;
+    });
+    if (importedList.length > 0) {
+      setSelectedReceipt(importedList[0]);
+    }
   };
 
   return (
@@ -136,6 +176,7 @@ export default function App() {
         onResetSeed={handleResetSeed}
         onClearLedger={handleClearLedger}
         onOpenManualModal={() => setIsManualModalOpen(true)}
+        onOpenImportModal={() => setIsImportModalOpen(true)}
         isDarkMode={isDarkMode}
         onToggleDarkMode={() => setIsDarkMode((prev) => !prev)}
       />
@@ -146,7 +187,11 @@ export default function App() {
         <MetricCards receipts={receipts} />
 
         {/* 2. Drag & Drop Receipt OCR Scanner */}
-        <ReceiptDropzone onReceiptProcessed={handleReceiptProcessed} />
+        <ReceiptDropzone
+          onReceiptProcessed={handleReceiptProcessed}
+          onMultipleReceiptsProcessed={handleMultipleReceiptsProcessed}
+          onOpenManualModal={() => setIsManualModalOpen(true)}
+        />
 
         {/* 3. Analytics & Financial Trend Charts */}
         <AnalyticsCharts receipts={receipts} />
@@ -175,6 +220,13 @@ export default function App() {
         isOpen={isManualModalOpen}
         onClose={() => setIsManualModalOpen(false)}
         onAdd={handleAddManualExpense}
+      />
+
+      {/* Import Receipts Modal */}
+      <ImportReceiptsModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        onImportSuccess={handleImportSuccess}
       />
 
       {/* Footer */}
