@@ -6,6 +6,7 @@ export interface ExpenseItem {
   unitPrice: number;
   vatAmount?: number;
   totalAmount?: number;
+  hasVat?: boolean;
   category?: string;
   productChoice?: string;
 }

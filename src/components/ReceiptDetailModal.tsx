@@ -17,21 +17,39 @@ import {
   Sparkles,
   Loader2,
   AlertCircle,
+  Lock,
+  Tag,
 } from "lucide-react";
 import { ExpenseReceipt, ExpenseItem } from "../types";
 import { containsArabic } from "../utils/arabicDetector";
 import { DEFAULT_CATEGORIES, DEFAULT_PRODUCT_CHOICES } from "../data/seedData";
+import {
+  STANDARD_VAT_RATE,
+  isItemVatApplicable,
+  toggleItemVat,
+  recalculateReceiptTotals,
+} from "../utils/vatCalculations";
+import {
+  getStoredProductChoices,
+  saveCustomProductChoice,
+  deleteCustomProductChoice,
+  getCustomOnlyProductChoices,
+  getStoredCategories,
+  saveCustomCategory,
+} from "../utils/choices";
 
 interface ReceiptDetailModalProps {
   receipt: ExpenseReceipt | null;
   onClose: () => void;
   onSave: (updated: ExpenseReceipt) => void;
+  onDelete?: (id: string) => void;
 }
 
 export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
   receipt,
   onClose,
   onSave,
+  onDelete,
 }) => {
   const [formData, setFormData] = useState<ExpenseReceipt>(() => receipt || {
     id: "",
@@ -47,14 +65,16 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
     vatTotal: 0,
     grandTotal: 0,
   });
-  const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES);
-  const [productChoices, setProductChoices] = useState<string[]>(DEFAULT_PRODUCT_CHOICES);
+  const [categories, setCategories] = useState<string[]>(() => getStoredCategories());
+  const [productChoices, setProductChoices] = useState<string[]>(() => getStoredProductChoices());
   const [isTranslating, setIsTranslating] = useState(false);
   const [translationError, setTranslationError] = useState<string | null>(null);
   const [customCatInput, setCustomCatInput] = useState("");
   const [showAddCatModal, setShowAddCatModal] = useState(false);
   const [customChoiceInput, setCustomChoiceInput] = useState("");
   const [showAddChoiceModal, setShowAddChoiceModal] = useState(false);
+  const [targetItemIdxForChoice, setTargetItemIdxForChoice] = useState<number | null>(null);
+  const [showConfirmDeleteReceipt, setShowConfirmDeleteReceipt] = useState(false);
   const [activeTab, setActiveTab] = useState<"details" | "image">("details");
 
   useEffect(() => {
@@ -72,51 +92,68 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
 
   // Recalculate totals from items
   const recalculateFromItems = (items: ExpenseItem[] = []) => {
-    const safeItems = Array.isArray(items) ? items : [];
-    const subtotal = safeItems.reduce(
-      (acc, it) => acc + (Number(it.unitPrice) || 0) * (Number(it.quantity) || 1),
-      0
-    );
-    const vat = safeItems.reduce((acc, it) => acc + (Number(it.vatAmount) || 0), 0);
-    const grandTotal = safeItems.reduce(
-      (acc, it) =>
-        acc +
-        (Number(it.totalAmount) ||
-          (Number(it.unitPrice) || 0) * (Number(it.quantity) || 1) +
-            (Number(it.vatAmount) || 0)),
-      0
-    );
+    return recalculateReceiptTotals(items);
+  };
 
-    return {
-      subtotal: Number(subtotal.toFixed(2)),
-      vatTotal: Number(vat.toFixed(2)),
-      grandTotal: Number(grandTotal.toFixed(2)),
-    };
+  // Toggle whether an item has VAT (15%) or No VAT (0% Exempt) WITHOUT changing its total amount
+  const handleToggleItemVat = (index: number, newHasVat: boolean) => {
+    const updatedItems = [...formData.items];
+    if (!updatedItems[index]) return;
+    const amended = toggleItemVat(updatedItems[index], newHasVat);
+    updatedItems[index] = amended;
+    const totals = recalculateReceiptTotals(updatedItems);
+    setFormData((prev) => ({
+      ...prev,
+      items: updatedItems,
+      ...totals,
+    }));
   };
 
   // Item field change handler
   const handleItemChange = (index: number, field: keyof ExpenseItem, value: any) => {
     const updatedItems = [...formData.items];
     const currentItem = { ...updatedItems[index], [field]: value };
+    const hasVat = isItemVatApplicable(currentItem);
 
     if (field === "quantity" || field === "unitPrice") {
-      const qty = field === "quantity" ? Number(value) || 0 : currentItem.quantity;
-      const price = field === "unitPrice" ? Number(value) || 0 : currentItem.unitPrice;
+      const qty = Math.max(1, field === "quantity" ? Number(value) || 1 : currentItem.quantity || 1);
+      const price = field === "unitPrice" ? Number(value) || 0 : currentItem.unitPrice || 0;
       const baseLineTotal = qty * price;
-      const vatRate = 0.15; // 15% VAT default
-      currentItem.vatAmount = Number((baseLineTotal * vatRate).toFixed(2));
-      currentItem.totalAmount = Number((baseLineTotal + currentItem.vatAmount).toFixed(2));
+      if (hasVat) {
+        currentItem.vatAmount = Number((baseLineTotal * STANDARD_VAT_RATE).toFixed(2));
+        currentItem.totalAmount = Number((baseLineTotal + currentItem.vatAmount).toFixed(2));
+      } else {
+        currentItem.vatAmount = 0;
+        currentItem.totalAmount = Number(baseLineTotal.toFixed(2));
+      }
     }
 
     if (field === "vatAmount") {
-      const qty = currentItem.quantity || 1;
+      const qty = Math.max(1, currentItem.quantity || 1);
       const price = currentItem.unitPrice || 0;
       const baseLineTotal = qty * price;
-      currentItem.totalAmount = Number((baseLineTotal + (Number(value) || 0)).toFixed(2));
+      const valNum = Number(value) || 0;
+      currentItem.vatAmount = valNum;
+      currentItem.hasVat = valNum > 0;
+      currentItem.totalAmount = Number((baseLineTotal + valNum).toFixed(2));
+    }
+
+    if (field === "totalAmount") {
+      const newTotal = Number(value) || 0;
+      const qty = Math.max(1, currentItem.quantity || 1);
+      if (hasVat) {
+        const preTax = Number((newTotal / (1 + STANDARD_VAT_RATE)).toFixed(2));
+        currentItem.vatAmount = Number((newTotal - preTax).toFixed(2));
+        currentItem.unitPrice = Number((preTax / qty).toFixed(2));
+      } else {
+        currentItem.vatAmount = 0;
+        currentItem.unitPrice = Number((newTotal / qty).toFixed(2));
+      }
+      currentItem.totalAmount = newTotal;
     }
 
     updatedItems[index] = currentItem;
-    const totals = recalculateFromItems(updatedItems);
+    const totals = recalculateReceiptTotals(updatedItems);
 
     setFormData((prev) => ({
       ...prev,
@@ -557,33 +594,42 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
 
           {/* Section: Ledger Line Items Breakdown */}
           <div className="space-y-3 pt-4 border-t border-slate-200 dark:border-slate-800">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
-                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-                  Ledger Line Items Breakdown
+                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <Tag className="w-3.5 h-3.5 text-emerald-500" />
+                  <span>Ledger Line Items Breakdown & VAT Status</span>
                 </h4>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Itemized product lines with unit price, VAT, and choice classification
+                  Amend whether an item has VAT or not, or change classification. Total amount is locked and preserved.
                 </p>
               </div>
-              <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+              <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 self-start sm:self-auto">
                 {formData.items.length} listed items
+              </span>
+            </div>
+
+            {/* Instruction Tip */}
+            <div className="p-2.5 bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 rounded-xl flex items-center gap-2 text-xs text-emerald-900 dark:text-emerald-300">
+              <Percent className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>
+                <strong>Amend VAT & Classification:</strong> Click <strong>Got VAT (15%)</strong> or <strong>No VAT (0%)</strong> to reclassify tax. Changing VAT or choice classification <strong>keeps the item's total billed amount strictly preserved</strong>.
               </span>
             </div>
 
             {/* Line items Table */}
             <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto shadow-2xs">
-              <table className="w-full text-left border-collapse text-xs">
+              <table className="w-full text-left border-collapse text-xs min-w-[760px]">
                 <thead>
                   <tr className="bg-slate-50 dark:bg-slate-800/80 text-slate-500 dark:text-slate-400 font-bold border-b border-slate-200 dark:border-slate-800">
                     <th className="py-2.5 px-3">Itemized Product Description</th>
                     <th className="py-2.5 px-3 w-32">Category</th>
-                    <th className="py-2.5 px-3 w-36">Product Choice</th>
-                    <th className="py-2.5 px-2 w-16 text-center">Qty</th>
-                    <th className="py-2.5 px-3 w-24 text-right">Unit Price</th>
-                    <th className="py-2.5 px-3 w-20 text-right">VAT (15%)</th>
-                    <th className="py-2.5 px-3 w-24 text-right">Total Amount</th>
-                    <th className="py-2.5 px-2 w-12 text-center">Actions</th>
+                    <th className="py-2.5 px-3 w-40">Classification Choice</th>
+                    <th className="py-2.5 px-2 w-14 text-center">Qty</th>
+                    <th className="py-2.5 px-3 w-20 text-right">Unit Price</th>
+                    <th className="py-2.5 px-3 w-44 text-center">VAT Status (Amend)</th>
+                    <th className="py-2.5 px-3 w-28 text-right">Total Amount</th>
+                    <th className="py-2.5 px-2 w-10 text-center"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
@@ -594,94 +640,160 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
                       </td>
                     </tr>
                   ) : (
-                    formData.items.map((item, idx) => (
-                      <tr key={idx} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40">
-                        {/* Description */}
-                        <td className="py-2 px-3">
-                          <input
-                            type="text"
-                            value={item.description}
-                            onChange={(e) => handleItemChange(idx, "description", e.target.value)}
-                            className="w-full px-2 py-1 bg-transparent border-b border-transparent focus:border-emerald-500 focus:bg-white dark:focus:bg-slate-800 rounded font-medium text-slate-900 dark:text-slate-100"
-                          />
-                        </td>
+                    formData.items.map((item, idx) => {
+                      const hasVat = isItemVatApplicable(item);
+                      const currentTotal =
+                        Number(item.totalAmount) ||
+                        (Number(item.unitPrice) || 0) * (Number(item.quantity) || 1) +
+                          (Number(item.vatAmount) || 0);
 
-                        {/* Category */}
-                        <td className="py-2 px-3">
-                          <select
-                            value={item.category || formData.category}
-                            onChange={(e) => handleItemChange(idx, "category", e.target.value)}
-                            className="w-full px-1.5 py-1 bg-transparent border-b border-transparent focus:border-emerald-500 text-xs font-semibold rounded"
-                          >
-                            {categories.map((c) => (
-                              <option key={c} value={c}>
-                                {c}
+                      return (
+                        <tr key={idx} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40">
+                          {/* Description */}
+                          <td className="py-2 px-3">
+                            <input
+                              type="text"
+                              value={item.description}
+                              onChange={(e) => handleItemChange(idx, "description", e.target.value)}
+                              className="w-full px-2 py-1 bg-transparent border-b border-transparent focus:border-emerald-500 focus:bg-white dark:focus:bg-slate-800 rounded font-medium text-slate-900 dark:text-slate-100"
+                            />
+                          </td>
+
+                          {/* Category */}
+                          <td className="py-2 px-3">
+                            <select
+                              value={item.category || formData.category}
+                              onChange={(e) => handleItemChange(idx, "category", e.target.value)}
+                              className="w-full px-1.5 py-1 bg-transparent border-b border-transparent focus:border-emerald-500 text-xs font-semibold rounded cursor-pointer"
+                            >
+                              {categories.map((c) => (
+                                <option key={c} value={c}>
+                                  {c}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+
+                          {/* Product Choice / Classification */}
+                          <td className="py-2 px-3">
+                            <select
+                              id={`select-product-choice-${idx}`}
+                              value={item.productChoice || "Kitchen Essentials"}
+                              onChange={(e) => {
+                                if (e.target.value === "__add_new_choice__") {
+                                  setTargetItemIdxForChoice(idx);
+                                  setShowAddChoiceModal(true);
+                                } else {
+                                  handleItemChange(idx, "productChoice", e.target.value);
+                                }
+                              }}
+                              className="w-full px-1.5 py-1 bg-transparent border-b border-transparent focus:border-emerald-500 text-xs rounded cursor-pointer text-slate-800 dark:text-slate-200"
+                            >
+                              {productChoices.map((pc) => (
+                                <option key={pc} value={pc} className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200">
+                                  {pc}
+                                </option>
+                              ))}
+                              <option
+                                value="__add_new_choice__"
+                                className="font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-slate-800"
+                              >
+                                + Add New Choice...
                               </option>
-                            ))}
-                          </select>
-                        </td>
+                            </select>
+                          </td>
 
-                        {/* Product Choice */}
-                        <td className="py-2 px-3">
-                          <select
-                            value={item.productChoice || "Kitchen Essentials"}
-                            onChange={(e) => handleItemChange(idx, "productChoice", e.target.value)}
-                            className="w-full px-1.5 py-1 bg-transparent border-b border-transparent focus:border-emerald-500 text-xs rounded"
-                          >
-                            {productChoices.map((pc) => (
-                              <option key={pc} value={pc}>
-                                {pc}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
+                          {/* Quantity */}
+                          <td className="py-2 px-2 text-center">
+                            <input
+                              type="number"
+                              min="1"
+                              value={item.quantity}
+                              onChange={(e) => handleItemChange(idx, "quantity", e.target.value)}
+                              className="w-12 text-center px-1 py-1 bg-transparent border-b border-transparent focus:border-emerald-500 font-bold"
+                            />
+                          </td>
 
-                        {/* Quantity */}
-                        <td className="py-2 px-2 text-center">
-                          <input
-                            type="number"
-                            min="1"
-                            value={item.quantity}
-                            onChange={(e) => handleItemChange(idx, "quantity", e.target.value)}
-                            className="w-12 text-center px-1 py-1 bg-transparent border-b border-transparent focus:border-emerald-500 font-bold"
-                          />
-                        </td>
+                          {/* Unit Price */}
+                          <td className="py-2 px-3 text-right">
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={item.unitPrice}
+                              onChange={(e) => handleItemChange(idx, "unitPrice", e.target.value)}
+                              className="w-18 text-right px-1 py-1 bg-transparent border-b border-transparent focus:border-emerald-500 font-semibold"
+                            />
+                          </td>
 
-                        {/* Unit Price */}
-                        <td className="py-2 px-3 text-right">
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={item.unitPrice}
-                            onChange={(e) => handleItemChange(idx, "unitPrice", e.target.value)}
-                            className="w-20 text-right px-1 py-1 bg-transparent border-b border-transparent focus:border-emerald-500 font-semibold"
-                          />
-                        </td>
+                          {/* VAT Status (Amend got VAT or not) */}
+                          <td className="py-2 px-3 text-center">
+                            <div className="flex flex-col items-center gap-1">
+                              <div className="inline-flex items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/80 p-0.5 shadow-2xs">
+                                <button
+                                  type="button"
+                                  id={`btn-item-${idx}-got-vat`}
+                                  onClick={() => handleToggleItemVat(idx, true)}
+                                  className={`px-2 py-0.5 rounded-md text-[11px] font-bold transition cursor-pointer ${
+                                    hasVat
+                                      ? "bg-amber-500 text-white shadow-xs"
+                                      : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+                                  }`}
+                                  title="Amend to Got VAT (15%) - Total amount unchanged"
+                                >
+                                  Got VAT (15%)
+                                </button>
+                                <button
+                                  type="button"
+                                  id={`btn-item-${idx}-no-vat`}
+                                  onClick={() => handleToggleItemVat(idx, false)}
+                                  className={`px-2 py-0.5 rounded-md text-[11px] font-bold transition cursor-pointer ${
+                                    !hasVat
+                                      ? "bg-slate-700 text-white dark:bg-slate-600 shadow-xs"
+                                      : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+                                  }`}
+                                  title="Amend to No VAT (0% Exempt) - Total amount unchanged"
+                                >
+                                  No VAT (0%)
+                                </button>
+                              </div>
+                              <span className="text-[10px] tabular-nums font-semibold text-slate-500 dark:text-slate-400">
+                                {hasVat
+                                  ? `VAT: ${(Number(item.vatAmount) || 0).toFixed(2)} ${formData.currency}`
+                                  : "0.00 (VAT Exempt)"}
+                              </span>
+                            </div>
+                          </td>
 
-                        {/* VAT Amount */}
-                        <td className="py-2 px-3 text-right font-medium text-slate-500">
-                          {(item.vatAmount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                        </td>
+                          {/* Total Amount (Locked & Preserved) */}
+                          <td className="py-2 px-3 text-right">
+                            <div className="flex flex-col items-end">
+                              <span className="font-extrabold text-xs text-emerald-600 dark:text-emerald-400 tabular-nums">
+                                {currentTotal.toFixed(2)} {formData.currency}
+                              </span>
+                              <span
+                                className="text-[10px] text-slate-400 flex items-center gap-0.5 font-medium"
+                                title="Billed total is preserved when amending VAT or classification"
+                              >
+                                <Lock className="w-2.5 h-2.5 text-slate-400" />
+                                <span>Amount Locked</span>
+                              </span>
+                            </div>
+                          </td>
 
-                        {/* Total Amount */}
-                        <td className="py-2 px-3 text-right font-bold text-emerald-600 dark:text-emerald-400">
-                          {(item.totalAmount || item.quantity * item.unitPrice).toLocaleString(undefined, {
-                            minimumFractionDigits: 2,
-                          })}
-                        </td>
-
-                        {/* Delete row */}
-                        <td className="py-2 px-2 text-center">
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveItem(idx)}
-                            className="p-1 text-slate-400 hover:text-rose-500 rounded transition cursor-pointer"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))
+                          {/* Delete row */}
+                          <td className="py-2 px-2 text-center">
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveItem(idx)}
+                              className="p-1 text-slate-400 hover:text-rose-500 rounded transition cursor-pointer"
+                              title="Remove line item"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -700,8 +812,12 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
               </button>
 
               <button
+                id="btn-add-product-choice-classification"
                 type="button"
-                onClick={() => setShowAddChoiceModal(true)}
+                onClick={() => {
+                  setTargetItemIdxForChoice(null);
+                  setShowAddChoiceModal(true);
+                }}
                 className="text-xs text-emerald-600 dark:text-emerald-400 font-semibold hover:underline cursor-pointer"
               >
                 + Add Product Choice Classification
@@ -712,11 +828,25 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
 
         {/* Modal Footer Controls */}
         <div className="px-6 py-4 border-t border-slate-200/80 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-900/90 flex items-center justify-between gap-3 shrink-0">
-          <div className="text-xs text-slate-500 dark:text-slate-400">
-            Total Billed:{" "}
-            <span className="font-extrabold text-slate-900 dark:text-white">
-              {formData.currency} {formData.grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-            </span>
+          <div className="flex items-center gap-3">
+            {onDelete && (
+              <button
+                id="btn-delete-receipt-from-modal"
+                type="button"
+                onClick={() => setShowConfirmDeleteReceipt(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 border border-rose-200 dark:border-rose-900/50 rounded-xl transition cursor-pointer"
+                title="Delete this entire receipt"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete Receipt</span>
+              </button>
+            )}
+            <div className="text-xs text-slate-500 dark:text-slate-400">
+              Total Billed:{" "}
+              <span className="font-extrabold text-slate-900 dark:text-white">
+                {formData.currency} {formData.grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              </span>
+            </div>
           </div>
 
           <div className="flex items-center gap-2.5">
@@ -739,6 +869,52 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
           </div>
         </div>
 
+        {/* In-Modal Delete Receipt Confirmation */}
+        {showConfirmDeleteReceipt && (
+          <div
+            id="modal-confirm-delete-receipt-inner"
+            className="fixed inset-0 z-70 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+          >
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 max-w-sm w-full shadow-2xl space-y-4 animate-in fade-in zoom-in-95">
+              <div className="flex items-center gap-3 text-rose-600 dark:text-rose-400">
+                <div className="p-3 bg-rose-50 dark:bg-rose-950/50 rounded-xl">
+                  <Trash2 className="w-6 h-6" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-slate-900 dark:text-white">Delete Entire Receipt?</h4>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">This removes the receipt from the ledger.</p>
+                </div>
+              </div>
+              <p className="text-xs text-slate-600 dark:text-slate-300">
+                Are you sure you want to delete the receipt for <span className="font-bold">{formData.storeName || "this merchant"}</span> ({formData.currency} {formData.grandTotal.toFixed(2)})?
+              </p>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmDeleteReceipt(false)}
+                  className="px-3.5 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl"
+                >
+                  Cancel
+                </button>
+                <button
+                  id="btn-confirm-delete-receipt-inner"
+                  type="button"
+                  onClick={() => {
+                    if (onDelete && formData.id) {
+                      onDelete(formData.id);
+                      setShowConfirmDeleteReceipt(false);
+                      onClose();
+                    }
+                  }}
+                  className="px-4 py-1.5 text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white rounded-xl shadow-sm transition cursor-pointer"
+                >
+                  Confirm Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Custom Category Modal */}
         {showAddCatModal && (
           <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/60 backdrop-blur-2xs">
@@ -751,7 +927,17 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
                 value={customCatInput}
                 onChange={(e) => setCustomCatInput(e.target.value)}
                 placeholder="e.g. Seafood & Poultry, Tableware..."
-                className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-emerald-500"
+                className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-emerald-500 text-slate-900 dark:text-white"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && customCatInput.trim()) {
+                    const newCat = customCatInput.trim();
+                    const updated = saveCustomCategory(newCat);
+                    setCategories(updated);
+                    setFormData((prev) => ({ ...prev, category: newCat }));
+                    setCustomCatInput("");
+                    setShowAddCatModal(false);
+                  }
+                }}
               />
               <div className="flex justify-end gap-2">
                 <button
@@ -766,7 +952,8 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
                   onClick={() => {
                     if (customCatInput.trim()) {
                       const newCat = customCatInput.trim();
-                      setCategories((prev) => [...prev, newCat]);
+                      const updated = saveCustomCategory(newCat);
+                      setCategories(updated);
                       setFormData((prev) => ({ ...prev, category: newCat }));
                       setCustomCatInput("");
                       setShowAddCatModal(false);
@@ -788,28 +975,55 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
               <h4 className="font-bold text-sm text-slate-900 dark:text-white">
                 Add Product Choice Classification
               </h4>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Create a custom product choice (e.g. Fresh Meat, Bakery, Cleaning Products). It will be saved and available across all receipts and filters.
+              </p>
               <input
+                id="input-new-product-choice"
                 type="text"
+                autoFocus
                 value={customChoiceInput}
                 onChange={(e) => setCustomChoiceInput(e.target.value)}
                 placeholder="e.g. Organic Dairy, Frozen Meat..."
-                className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-emerald-500"
+                className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-emerald-500 text-slate-900 dark:text-white"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && customChoiceInput.trim()) {
+                    const newChoice = customChoiceInput.trim();
+                    const updated = saveCustomProductChoice(newChoice);
+                    setProductChoices(updated);
+                    if (targetItemIdxForChoice !== null) {
+                      handleItemChange(targetItemIdxForChoice, "productChoice", newChoice);
+                    }
+                    setCustomChoiceInput("");
+                    setTargetItemIdxForChoice(null);
+                    setShowAddChoiceModal(false);
+                  }
+                }}
               />
               <div className="flex justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setShowAddChoiceModal(false)}
+                  onClick={() => {
+                    setShowAddChoiceModal(false);
+                    setTargetItemIdxForChoice(null);
+                  }}
                   className="px-3 py-1.5 text-xs text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"
                 >
                   Cancel
                 </button>
                 <button
+                  id="btn-confirm-add-choice"
                   type="button"
                   onClick={() => {
                     if (customChoiceInput.trim()) {
                       const newChoice = customChoiceInput.trim();
-                      setProductChoices((prev) => [...prev, newChoice]);
+                      const updated = saveCustomProductChoice(newChoice);
+                      setProductChoices(updated);
+                      if (targetItemIdxForChoice !== null) {
+                        handleItemChange(targetItemIdxForChoice, "productChoice", newChoice);
+                      }
                       setCustomChoiceInput("");
+                      setTargetItemIdxForChoice(null);
                       setShowAddChoiceModal(false);
                     }
                   }}
@@ -817,6 +1031,47 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
                 >
                   Add Choice
                 </button>
+              </div>
+
+              {/* Delete / Manage Custom Choices */}
+              <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <h5 className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                    Your Custom Choices
+                  </h5>
+                  <span className="text-[10px] text-slate-400">
+                    {getCustomOnlyProductChoices().length} saved
+                  </span>
+                </div>
+                {getCustomOnlyProductChoices().length > 0 ? (
+                  <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1">
+                    {getCustomOnlyProductChoices().map((choice) => (
+                      <div
+                        key={choice}
+                        className="flex items-center justify-between px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800/80 rounded-lg text-xs"
+                      >
+                        <span className="font-medium text-slate-800 dark:text-slate-200 truncate pr-2">
+                          {choice}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updated = deleteCustomProductChoice(choice);
+                            setProductChoices(updated);
+                          }}
+                          className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50 rounded transition cursor-pointer shrink-0"
+                          title={`Delete "${choice}"`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-slate-400">
+                    Standard catalog choices are permanent defaults. Any custom choices you add will be listed here with a delete option.
+                  </p>
+                )}
               </div>
             </div>
           </div>

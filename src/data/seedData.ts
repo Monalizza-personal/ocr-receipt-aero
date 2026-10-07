@@ -158,6 +158,7 @@ export const INITIAL_RECEIPTS: ExpenseReceipt[] = [
 
 export const DEFAULT_CATEGORIES = [
   "Food & Dining",
+  "Fresh Product",
   "Kitchen Supplies",
   "Household",
   "Electronics",
@@ -172,6 +173,7 @@ export const DEFAULT_CATEGORIES = [
 export const DEFAULT_PRODUCT_CHOICES = [
   "Refrigeration Unit",
   "Cooking Equipment",
+  "Fresh Product",
   "Fresh Produce",
   "Pantry & Ingredients",
   "Beverages & Coffee",
@@ -187,6 +189,8 @@ export const DEFAULT_PRODUCT_CHOICES = [
 
 export const CATEGORY_COLORS: Record<string, string> = {
   "Food & Dining": "#10b981", // emerald
+  "Fresh Product": "#22c55e", // vibrant fresh green
+  "Fresh Produce": "#22c55e", // fresh green alias
   "Kitchen Supplies": "#06b6d4", // cyan
   "Household": "#8b5cf6", // violet
   "Electronics": "#3b82f6", // blue

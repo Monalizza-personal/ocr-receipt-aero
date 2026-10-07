@@ -213,6 +213,10 @@ export default function App() {
           handleUpdateReceipt(updated.id, updated);
           setSelectedReceipt(null);
         }}
+        onDelete={(id) => {
+          handleDeleteReceipt(id);
+          setSelectedReceipt(null);
+        }}
       />
 
       {/* Manual Expense Creation Modal */}

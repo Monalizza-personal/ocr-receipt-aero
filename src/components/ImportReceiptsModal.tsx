@@ -23,7 +23,7 @@ export const ImportReceiptsModal: React.FC<ImportReceiptsModalProps> = ({
   onImportSuccess,
 }) => {
   const [dragActive, setDragActive] = useState(false);
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [pastedContent, setPastedContent] = useState("");
   const [parsedPreview, setParsedPreview] = useState<ExpenseReceipt[] | null>(null);
   const [replaceAll, setReplaceAll] = useState(false);
@@ -47,24 +47,35 @@ export const ImportReceiptsModal: React.FC<ImportReceiptsModalProps> = ({
     }
   };
 
-  const handleFileChange = (selectedFile: File) => {
-    setFile(selectedFile);
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const text = e.target?.result as string;
-      handleProcessText(text, selectedFile.name);
-    };
-    reader.onerror = () => {
-      setErrorMessage("Failed to read file.");
-    };
-    reader.readAsText(selectedFile);
+  const handleFilesChange = async (selectedFiles: File[]) => {
+    if (selectedFiles.length === 0) return;
+    setFiles(selectedFiles);
+    setIsProcessing(true);
+    setErrorMessage(null);
+    try {
+      const allParsed: ExpenseReceipt[] = [];
+      for (const f of selectedFiles) {
+        const text = await f.text();
+        const parsed = parseImportedReceiptsFile(text, f.name);
+        allParsed.push(...parsed);
+      }
+      if (allParsed.length === 0) {
+        throw new Error("No valid receipts found in the selected document(s).");
+      }
+      setParsedPreview(allParsed);
+    } catch (err: any) {
+      setErrorMessage(err.message || "Failed to parse import file(s).");
+      setParsedPreview(null);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragActive(false);
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFileChange(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleFilesChange(Array.from(e.dataTransfer.files));
     }
   };
 
@@ -75,7 +86,7 @@ export const ImportReceiptsModal: React.FC<ImportReceiptsModalProps> = ({
   };
 
   const handleClose = () => {
-    setFile(null);
+    setFiles([]);
     setPastedContent("");
     setParsedPreview(null);
     setErrorMessage(null);
@@ -137,20 +148,25 @@ export const ImportReceiptsModal: React.FC<ImportReceiptsModalProps> = ({
               ref={fileInputRef}
               type="file"
               accept=".csv,.json,text/csv,application/json,text/plain"
+              multiple
               className="hidden"
               onChange={(e) => {
-                if (e.target.files && e.target.files[0]) {
-                  handleFileChange(e.target.files[0]);
+                if (e.target.files && e.target.files.length > 0) {
+                  handleFilesChange(Array.from(e.target.files));
                 }
               }}
             />
             <UploadCloud className="w-8 h-8 text-slate-400 dark:text-slate-500" />
             <div>
               <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
-                {file ? file.name : "Click to select or drag CSV / JSON file here"}
+                {files.length > 1
+                  ? `${files.length} documents selected (${files.map((f) => f.name).join(", ")})`
+                  : files.length === 1
+                  ? files[0].name
+                  : "Click to select or drag single or multiple CSV / JSON files here"}
               </p>
               <p className="text-xs text-slate-400 mt-0.5">
-                Accepts InstaSheet exports, receipts CSV, line items CSV, or JSON
+                Multi-file supported &bull; Accepts InstaSheet exports, receipts CSV, line items CSV, or JSON
               </p>
             </div>
           </div>

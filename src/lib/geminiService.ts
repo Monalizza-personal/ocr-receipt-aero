@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 
 // Normalize MIME types for Gemini Vision
 export function normalizeMimeType(mime?: string, base64?: string): string {
@@ -55,6 +55,7 @@ export async function generateWithFallback(
     contents: any;
     config?: any;
     primaryModel?: string;
+    timeoutMs?: number;
   }
 ) {
   const modelsToTry = [
@@ -66,18 +67,29 @@ export async function generateWithFallback(
 
   const uniqueModels = Array.from(new Set(modelsToTry));
   let lastError: any = null;
+  const timeoutLimit = params.timeoutMs || 35000;
 
   for (let mIdx = 0; mIdx < uniqueModels.length; mIdx++) {
     const currentModel = uniqueModels[mIdx];
     try {
+      const modelConfig: any = { ...(params.config || {}) };
+
+      // Set low thinking level for Gemini 3 models to prevent reasoning latency
+      if (currentModel.startsWith("gemini-3") && !modelConfig.thinkingConfig) {
+        modelConfig.thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };
+      }
+
       const responsePromise = ai.models.generateContent({
         model: currentModel,
         contents: params.contents,
-        config: params.config,
+        config: modelConfig,
       });
 
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`Timeout on model ${currentModel}`)), 12000)
+        setTimeout(
+          () => reject(new Error(`Timeout after ${Math.round(timeoutLimit / 1000)}s on model ${currentModel}`)),
+          timeoutLimit
+        )
       );
 
       const response: any = await Promise.race([responsePromise, timeoutPromise]);

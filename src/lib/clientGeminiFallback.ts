@@ -40,7 +40,7 @@ export async function processOcrClientSide(
     const safeMime = normalizeMimeType(mimeType, cleanBase64);
 
     const { response } = await generateWithFallback(ai, {
-      primaryModel: "gemini-3.8-flash",
+      primaryModel: "gemini-3.1-flash-lite",
       contents: [
         {
           inlineData: {
@@ -107,7 +107,7 @@ export async function parseTextClientSide(textContent: string): Promise<any> {
   const prompt = `${PARSE_TEXT_PROMPT_PREFIX}\n"""\n${textContent}\n"""\n\nReturn strictly valid JSON.`;
 
   const { response } = await generateWithFallback(ai, {
-    primaryModel: "gemini-3.7-flash",
+    primaryModel: "gemini-3.1-flash-lite",
     contents: prompt,
     config: {
       responseMimeType: "application/json",

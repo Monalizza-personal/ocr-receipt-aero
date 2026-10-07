@@ -7,6 +7,8 @@ import {
   Loader2,
   AlertCircle,
   PlusCircle,
+  CheckCircle2,
+  Files,
 } from "lucide-react";
 import { ExpenseReceipt } from "../types";
 import { CameraCaptureModal } from "./CameraCaptureModal";
@@ -32,6 +34,7 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({
   const [processingStatus, setProcessingStatus] = useState<string>("");
   const [progressPercent, setProgressPercent] = useState<number>(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [batchSuccessMessage, setBatchSuccessMessage] = useState<string | null>(null);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [isTextModalOpen, setIsTextModalOpen] = useState(false);
 
@@ -101,81 +104,92 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({
     }
   };
 
-  // Preprocess & optimize image for Gemini OCR (ultra-fast, lightweight max 1000px dimension, zero memory leak)
+  // Preprocess & optimize image for Gemini OCR with pristine quality
   const prepareFileForOCR = (
     file: File
   ): Promise<{ base64: string; mimeType: string; previewUrl: string }> => {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
       const previewUrl = URL.createObjectURL(file);
 
-      if (isPdf) {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const res = (reader.result as string) || "";
-          resolve({ base64: res, mimeType: "application/pdf", previewUrl });
-        };
-        reader.onerror = () => resolve({ base64: "", mimeType: "application/pdf", previewUrl });
-        reader.readAsDataURL(file);
-        return;
-      }
-
-      // Images: Load via object URL to avoid reading full file into memory as string!
-      const img = new Image();
-      img.onload = () => {
-        const MAX_DIM = 1000;
-        let width = img.naturalWidth || img.width || 800;
-        let height = img.naturalHeight || img.height || 600;
-
-        if (width > MAX_DIM || height > MAX_DIM) {
-          if (width > height) {
-            height = Math.round((height * MAX_DIM) / width);
-            width = MAX_DIM;
-          } else {
-            width = Math.round((width * MAX_DIM) / height);
-            height = MAX_DIM;
-          }
-        }
-
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.max(1, width);
-        canvas.height = Math.max(1, height);
-        const ctx = canvas.getContext("2d", { willReadFrequently: false });
-        if (!ctx) {
-          resolve({ base64: "", mimeType: "image/jpeg", previewUrl });
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error(`Failed to read file "${file.name}" from disk.`));
+      reader.onload = () => {
+        const rawResult = (reader.result as string) || "";
+        if (!rawResult) {
+          reject(new Error(`File "${file.name}" is empty or unreadable.`));
           return;
         }
 
-        ctx.drawImage(img, 0, 0, width, height);
-        try {
-          // Compress down to ~70-120KB for fast, crash-free network transfer
-          const compressedDataUrl = canvas.toDataURL("image/jpeg", 0.70);
-          resolve({ base64: compressedDataUrl, mimeType: "image/jpeg", previewUrl });
-        } catch {
-          resolve({ base64: "", mimeType: "image/jpeg", previewUrl });
+        // PDFs and standard images up to 4MB: Send pristine file directly without canvas compression
+        if (isPdf || file.size <= 4 * 1024 * 1024) {
+          resolve({
+            base64: rawResult,
+            mimeType: isPdf ? "application/pdf" : (file.type || "image/jpeg"),
+            previewUrl,
+          });
+          return;
         }
-      };
 
-      img.onerror = () => {
-        // Fallback for uncommon image types
-        const reader = new FileReader();
-        reader.onload = () => {
-          const res = (reader.result as string) || "";
-          resolve({ base64: res, mimeType: file.type || "image/jpeg", previewUrl });
+        // For large images (>4MB), scale down to 2048px to keep fine print sharp
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const MAX_DIM = 2048;
+            let width = img.naturalWidth || img.width || 1200;
+            let height = img.naturalHeight || img.height || 1600;
+
+            if (width > MAX_DIM || height > MAX_DIM) {
+              if (width > height) {
+                height = Math.round((height * MAX_DIM) / width);
+                width = MAX_DIM;
+              } else {
+                width = Math.round((width * MAX_DIM) / height);
+                height = MAX_DIM;
+              }
+            }
+
+            const canvas = document.createElement("canvas");
+            canvas.width = Math.max(1, width);
+            canvas.height = Math.max(1, height);
+            const ctx = canvas.getContext("2d");
+            if (!ctx) {
+              resolve({ base64: rawResult, mimeType: file.type || "image/jpeg", previewUrl });
+              return;
+            }
+
+            ctx.drawImage(img, 0, 0, width, height);
+            const compressed = canvas.toDataURL("image/jpeg", 0.88);
+            if (compressed && compressed.length > 500) {
+              resolve({ base64: compressed, mimeType: "image/jpeg", previewUrl });
+            } else {
+              resolve({ base64: rawResult, mimeType: file.type || "image/jpeg", previewUrl });
+            }
+          } catch {
+            resolve({ base64: rawResult, mimeType: file.type || "image/jpeg", previewUrl });
+          }
         };
-        reader.onerror = () => resolve({ base64: "", mimeType: file.type || "image/jpeg", previewUrl });
-        reader.readAsDataURL(file);
+
+        img.onerror = () => {
+          resolve({ base64: rawResult, mimeType: file.type || "image/jpeg", previewUrl });
+        };
+
+        img.src = previewUrl;
       };
 
-      img.src = previewUrl;
+      reader.readAsDataURL(file);
     });
   };
 
-  // Process uploaded files through backend OCR or fallback
+  // Process uploaded files through backend OCR or fallback (Supports Single or Multiple Documents)
   const handleFiles = async (files: File[]) => {
     if (files.length === 0) return;
     setErrorMessage(null);
+    setBatchSuccessMessage(null);
     setIsProcessing(true);
+
+    let successCount = 0;
+    const errors: string[] = [];
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
@@ -185,11 +199,15 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({
       const isTxt = fileNameLower.endsWith(".txt") || file.type === "text/plain";
       const isPdf = file.type === "application/pdf" || fileNameLower.endsWith(".pdf");
 
+      const calcPercent = (stepRatio: number) => {
+        return Math.min(98, Math.round(((i + stepRatio) / files.length) * 100));
+      };
+
       // Direct Import Support: CSV / JSON
       if (isCsv || isJson) {
         try {
-          setProcessingStatus(`[File ${i + 1}/${files.length}] Importing receipts from "${file.name}"...`);
-          setProgressPercent(50);
+          setProcessingStatus(`[Document ${i + 1}/${files.length}] Importing data from "${file.name}"...`);
+          setProgressPercent(calcPercent(0.5));
           const text = await file.text();
           const imported = parseImportedReceiptsFile(text, file.name);
           if (imported.length === 0) {
@@ -202,11 +220,12 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({
               onReceiptProcessed(receipt);
             }
           }
-          setProgressPercent(100);
+          successCount += imported.length;
+          setProgressPercent(calcPercent(1));
           continue;
         } catch (importErr: any) {
           console.error("Error importing file:", importErr);
-          setErrorMessage(`Failed to import "${file.name}": ${importErr.message || "Invalid file format"}`);
+          errors.push(`"${file.name}": ${importErr.message || "Invalid file format"}`);
           continue;
         }
       }
@@ -214,8 +233,8 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({
       // Text Receipt / SMS / WhatsApp note
       if (isTxt) {
         try {
-          setProcessingStatus(`[File ${i + 1}/${files.length}] Parsing text receipt "${file.name}"...`);
-          setProgressPercent(40);
+          setProcessingStatus(`[Document ${i + 1}/${files.length}] Parsing text receipt "${file.name}"...`);
+          setProgressPercent(calcPercent(0.4));
           const textContent = await file.text();
           let data: any = null;
           try {
@@ -272,64 +291,51 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({
             createdAt: Date.now(),
           };
 
-          setProgressPercent(100);
+          successCount++;
+          setProgressPercent(calcPercent(1));
           onReceiptProcessed(newReceipt);
           continue;
         } catch (txtErr: any) {
           console.error("Text receipt parse error:", txtErr);
-          setErrorMessage(`Failed to parse text from "${file.name}": ${txtErr.message}`);
+          errors.push(`"${file.name}": ${txtErr.message}`);
           continue;
         }
       }
 
       // OCR Flow for Images / PDFs
       try {
-        setProcessingStatus(`[File ${i + 1}/${files.length}] Reading "${file.name}"...`);
-        setProgressPercent(20);
+        setProcessingStatus(`[Document ${i + 1}/${files.length}] Reading "${file.name}"...`);
+        setProgressPercent(calcPercent(0.2));
 
         const { base64, mimeType, previewUrl } = await prepareFileForOCR(file);
-        setProgressPercent(45);
-        setProcessingStatus(`[File ${i + 1}/${files.length}] Scanning with Gemini Vision AI...`);
+        setProgressPercent(calcPercent(0.45));
+        setProcessingStatus(`[Document ${i + 1}/${files.length}] Scanning with Gemini Vision AI...`);
 
+        const response = await fetch("/api/ocr", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            imageBase64: base64,
+            mimeType: mimeType,
+            filename: file.name,
+          }),
+        });
+
+        const rawText = await response.text();
         let data: any = null;
-
         try {
-          const response = await fetch("/api/ocr", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              imageBase64: base64,
-              mimeType: mimeType,
-              filename: file.name,
-            }),
-          });
-
-          const rawText = await response.text();
-          try {
-            data = JSON.parse(rawText);
-          } catch {
-            data = null;
-          }
-
-          // If server returned non-OK or an error payload, smoothly fall back to client AI
-          if (!response.ok || !data || data.error) {
-            console.warn(`Server OCR returned ${response.status}, activating client fallback...`);
-            setProcessingStatus(`Processing with client AI fallback...`);
-            data = await processOcrClientSide(base64, mimeType, file.name);
-          }
-        } catch (fetchErr: any) {
-          console.warn("Primary OCR route unreachable, executing client fallback:", fetchErr);
-          data = await processOcrClientSide(base64, mimeType, file.name);
+          data = JSON.parse(rawText);
+        } catch {
+          data = null;
         }
 
-        // Resilient safety net: if both server and client returned null
-        if (!data) {
-          console.warn("Using resilient simulated extraction with image preserved.");
-          data = getSimulatedExtraction(file.name);
+        if (!response.ok || !data || data.error) {
+          const errMsg = data?.error || `Server OCR error (HTTP ${response.status})`;
+          throw new Error(errMsg);
         }
 
-        setProgressPercent(80);
-        setProcessingStatus(`Structuring line items, prices, and tax numbers...`);
+        setProgressPercent(calcPercent(0.85));
+        setProcessingStatus(`[Document ${i + 1}/${files.length}] Extracting line items, prices, and tax numbers...`);
 
         const receiptData = Array.isArray(data) ? data[0] || {} : (data || {});
 
@@ -372,13 +378,12 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({
           createdAt: Date.now(),
         };
 
-        setProgressPercent(100);
+        successCount++;
+        setProgressPercent(calcPercent(1));
         onReceiptProcessed(newReceipt);
       } catch (err: any) {
         console.error("Error processing file:", err);
-        setErrorMessage(
-          `Failed to parse "${file.name}": ${err.message || "Unknown error"}.`
-        );
+        errors.push(`"${file.name}": ${err.message || "Extraction error"}`);
       }
     }
 
@@ -387,6 +392,17 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({
     setProcessingStatus("");
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
+    }
+
+    if (successCount > 0) {
+      setBatchSuccessMessage(
+        files.length > 1
+          ? `Successfully scanned and added ${successCount} of ${files.length} documents to your ledger!`
+          : `Successfully scanned and added receipt to your ledger!`
+      );
+    }
+    if (errors.length > 0) {
+      setErrorMessage(`Encountered issues with ${errors.length} file(s): ${errors.join(" | ")}`);
     }
   };
 
@@ -622,14 +638,18 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({
             </div>
 
             <div className="space-y-1">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 mb-1 rounded-full bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-300 text-[11px] font-semibold">
+                <Files className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+                <span>Multi-Document Upload Supported &bull; Select or drop multiple receipts at once</span>
+              </div>
               <p className="text-sm sm:text-base font-bold text-slate-900 dark:text-slate-100">
-                Click anywhere or drop receipt image, photo, PDF, CSV, or{" "}
+                Click anywhere or drop receipt images, photos, PDFs, CSVs, or{" "}
                 <span className="text-emerald-600 dark:text-emerald-400 font-extrabold underline">
                   browse files
                 </span>
               </p>
               <p className="text-xs text-slate-500 dark:text-slate-400 flex items-center justify-center gap-1.5 flex-wrap">
-                <span>Accepts JPEG, PNG, HEIC, WebP, PDFs, CSV/JSON, or press <kbd className="px-1.5 py-0.5 text-[10px] font-mono font-semibold bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-md">Ctrl+V</kbd> to paste</span>
+                <span>Upload single or multiple files (JPEG, PNG, HEIC, WebP, PDF, CSV, JSON) or press <kbd className="px-1.5 py-0.5 text-[10px] font-mono font-semibold bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-md">Ctrl+V</kbd> to paste</span>
               </p>
             </div>
 
@@ -692,6 +712,23 @@ export const ReceiptDropzone: React.FC<ReceiptDropzoneProps> = ({
           </div>
         )}
       </div>
+
+      {/* Batch Success Banner */}
+      {batchSuccessMessage && (
+        <div className="mt-3 p-3.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/60 rounded-xl flex items-center justify-between gap-2.5 text-emerald-800 dark:text-emerald-300 text-xs shadow-2xs">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span className="font-semibold">{batchSuccessMessage}</span>
+          </div>
+          <button
+            onClick={() => setBatchSuccessMessage(null)}
+            type="button"
+            className="text-emerald-700 dark:text-emerald-400 hover:text-emerald-900 dark:hover:text-emerald-200 text-xs font-bold cursor-pointer"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Error Alert Message */}
       {errorMessage && (

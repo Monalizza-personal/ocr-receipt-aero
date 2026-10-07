@@ -1,7 +1,20 @@
 import React, { useState } from "react";
-import { X, Plus, Trash2, CheckCircle2, DollarSign, Calendar, Building2 } from "lucide-react";
+import { X, Plus, Trash2, CheckCircle2, DollarSign, Calendar, Building2, Lock, Percent } from "lucide-react";
 import { ExpenseReceipt, ExpenseItem } from "../types";
 import { DEFAULT_CATEGORIES, DEFAULT_PRODUCT_CHOICES } from "../data/seedData";
+import {
+  getStoredProductChoices,
+  saveCustomProductChoice,
+  deleteCustomProductChoice,
+  getCustomOnlyProductChoices,
+  getStoredCategories,
+} from "../utils/choices";
+import {
+  STANDARD_VAT_RATE,
+  isItemVatApplicable,
+  toggleItemVat,
+  recalculateReceiptTotals,
+} from "../utils/vatCalculations";
 
 interface ManualExpenseModalProps {
   isOpen: boolean;
@@ -18,6 +31,9 @@ export const ManualExpenseModal: React.FC<ManualExpenseModalProps> = ({
   const [invoiceNo, setInvoiceNo] = useState("INV-" + Math.floor(1000 + Math.random() * 9000));
   const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
   const [category, setCategory] = useState("Food & Dining");
+  const [productChoices, setProductChoices] = useState<string[]>(() => getStoredProductChoices());
+  const [choiceModalItemIdx, setChoiceModalItemIdx] = useState<number | null>(null);
+  const [newChoiceInput, setNewChoiceInput] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("Card");
   const [storeAddress, setStoreAddress] = useState("");
   const [taxId, setTaxId] = useState("");
@@ -35,16 +51,46 @@ export const ManualExpenseModal: React.FC<ManualExpenseModalProps> = ({
     },
   ]);
 
+  const handleToggleItemVat = (index: number, newHasVat: boolean) => {
+    const updated = [...items];
+    if (!updated[index]) return;
+    const amended = toggleItemVat(updated[index], newHasVat);
+    updated[index] = amended;
+    setItems(updated);
+  };
+
   const handleItemChange = (index: number, field: keyof ExpenseItem, val: any) => {
     const updated = [...items];
     const item = { ...updated[index], [field]: val };
+    const hasVat = isItemVatApplicable(item);
+
     if (field === "quantity" || field === "unitPrice") {
-      const q = field === "quantity" ? Number(val) || 0 : item.quantity;
-      const p = field === "unitPrice" ? Number(val) || 0 : item.unitPrice;
+      const q = Math.max(1, field === "quantity" ? Number(val) || 1 : item.quantity || 1);
+      const p = field === "unitPrice" ? Number(val) || 0 : item.unitPrice || 0;
       const base = q * p;
-      item.vatAmount = Number((base * 0.15).toFixed(2));
-      item.totalAmount = Number((base + item.vatAmount).toFixed(2));
+      if (hasVat) {
+        item.vatAmount = Number((base * STANDARD_VAT_RATE).toFixed(2));
+        item.totalAmount = Number((base + item.vatAmount).toFixed(2));
+      } else {
+        item.vatAmount = 0;
+        item.totalAmount = Number(base.toFixed(2));
+      }
     }
+
+    if (field === "totalAmount") {
+      const newTotal = Number(val) || 0;
+      const q = Math.max(1, item.quantity || 1);
+      if (hasVat) {
+        const preTax = Number((newTotal / (1 + STANDARD_VAT_RATE)).toFixed(2));
+        item.vatAmount = Number((newTotal - preTax).toFixed(2));
+        item.unitPrice = Number((preTax / q).toFixed(2));
+      } else {
+        item.vatAmount = 0;
+        item.unitPrice = Number((newTotal / q).toFixed(2));
+      }
+      item.totalAmount = newTotal;
+    }
+
     updated[index] = item;
     setItems(updated);
   };
@@ -69,9 +115,10 @@ export const ManualExpenseModal: React.FC<ManualExpenseModalProps> = ({
     setItems((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const subtotal = items.reduce((acc, it) => acc + (it.unitPrice || 0) * (it.quantity || 1), 0);
-  const vatTotal = items.reduce((acc, it) => acc + (it.vatAmount || 0), 0);
-  const grandTotal = items.reduce((acc, it) => acc + (it.totalAmount || 0), 0);
+  const totals = recalculateReceiptTotals(items);
+  const subtotal = totals.subtotal;
+  const vatTotal = totals.vatTotal;
+  const grandTotal = totals.grandTotal;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -163,7 +210,7 @@ export const ManualExpenseModal: React.FC<ManualExpenseModalProps> = ({
                 onChange={(e) => setCategory(e.target.value)}
                 className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-emerald-500"
               >
-                {DEFAULT_CATEGORIES.map((c) => (
+                {getStoredCategories().map((c) => (
                   <option key={c} value={c}>
                     {c}
                   </option>
@@ -216,64 +263,138 @@ export const ManualExpenseModal: React.FC<ManualExpenseModalProps> = ({
           {/* Items Sub-table */}
           <div className="space-y-2 pt-2">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                Line Items
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                <Percent className="w-3.5 h-3.5 text-emerald-500" />
+                <span>Line Items & VAT Amendment</span>
               </span>
               <button
                 type="button"
                 onClick={handleAddItem}
-                className="text-xs text-emerald-600 dark:text-emerald-400 font-bold hover:underline"
+                className="text-xs text-emerald-600 dark:text-emerald-400 font-bold hover:underline cursor-pointer"
               >
                 + Add Item
               </button>
             </div>
 
             <div className="space-y-2">
-              {items.map((item, idx) => (
-                <div
-                  key={idx}
-                  className="p-2.5 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700 flex flex-col sm:flex-row items-center gap-2"
-                >
-                  <input
-                    type="text"
-                    required
-                    placeholder="Item description"
-                    value={item.description}
-                    onChange={(e) => handleItemChange(idx, "description", e.target.value)}
-                    className="flex-1 px-2 py-1 text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded"
-                  />
-                  <div className="flex items-center gap-1.5 w-full sm:w-auto">
+              {items.map((item, idx) => {
+                const hasVat = isItemVatApplicable(item);
+                const currentTotal =
+                  Number(item.totalAmount) ||
+                  (Number(item.unitPrice) || 0) * (Number(item.quantity) || 1) +
+                    (Number(item.vatAmount) || 0);
+
+                return (
+                  <div
+                    key={idx}
+                    className="p-2.5 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700 flex flex-col md:flex-row items-center gap-2"
+                  >
                     <input
-                      type="number"
-                      min="1"
-                      placeholder="Qty"
-                      value={item.quantity}
-                      onChange={(e) => handleItemChange(idx, "quantity", e.target.value)}
-                      className="w-14 px-2 py-1 text-xs text-center bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded"
+                      type="text"
+                      required
+                      placeholder="Item description"
+                      value={item.description}
+                      onChange={(e) => handleItemChange(idx, "description", e.target.value)}
+                      className="w-full md:flex-1 px-2 py-1 text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded text-slate-900 dark:text-white"
                     />
-                    <input
-                      type="number"
-                      step="0.01"
-                      placeholder="Price"
-                      value={item.unitPrice}
-                      onChange={(e) => handleItemChange(idx, "unitPrice", e.target.value)}
-                      className="w-20 px-2 py-1 text-xs text-right bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded"
-                    />
-                    <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 w-20 text-right">
-                      SAR {item.totalAmount}
-                    </span>
-                    {items.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveItem(idx)}
-                        className="p-1 text-slate-400 hover:text-rose-500"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    )}
+
+                    {/* Product Choice / Classification */}
+                    <select
+                      value={item.productChoice || "Kitchen Essentials"}
+                      onChange={(e) => {
+                        if (e.target.value === "__add_new_choice__") {
+                          setChoiceModalItemIdx(idx);
+                          setNewChoiceInput("");
+                        } else {
+                          handleItemChange(idx, "productChoice", e.target.value);
+                        }
+                      }}
+                      className="w-full md:w-32 px-2 py-1 text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded text-slate-800 dark:text-slate-200 cursor-pointer"
+                      title="Product Choice / Classification"
+                    >
+                      {productChoices.map((pc) => (
+                        <option key={pc} value={pc} className="bg-white dark:bg-slate-900">
+                          {pc}
+                        </option>
+                      ))}
+                      <option value="__add_new_choice__" className="font-bold text-emerald-600 bg-emerald-50 dark:bg-slate-800">
+                        + Add Choice...
+                      </option>
+                    </select>
+
+                    <div className="flex items-center gap-1.5 w-full md:w-auto justify-between md:justify-start">
+                      <input
+                        type="number"
+                        min="1"
+                        placeholder="Qty"
+                        value={item.quantity}
+                        onChange={(e) => handleItemChange(idx, "quantity", e.target.value)}
+                        className="w-12 px-2 py-1 text-xs text-center bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded font-semibold"
+                        title="Quantity"
+                      />
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="Price"
+                        value={item.unitPrice}
+                        onChange={(e) => handleItemChange(idx, "unitPrice", e.target.value)}
+                        className="w-16 px-2 py-1 text-xs text-right bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded font-medium"
+                        title="Unit price"
+                      />
+
+                      {/* VAT Toggle */}
+                      <div className="inline-flex items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-900 p-0.5 text-[10px]">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleItemVat(idx, true)}
+                          className={`px-1.5 py-0.5 rounded font-bold transition cursor-pointer ${
+                            hasVat
+                              ? "bg-amber-500 text-white shadow-2xs"
+                              : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+                          }`}
+                          title="Apply 15% VAT while keeping Total Amount unchanged"
+                        >
+                          15%
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleItemVat(idx, false)}
+                          className={`px-1.5 py-0.5 rounded font-bold transition cursor-pointer ${
+                            !hasVat
+                              ? "bg-slate-700 text-white dark:bg-slate-600 shadow-2xs"
+                              : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+                          }`}
+                          title="Set to 0% (Exempt) while keeping Total Amount unchanged"
+                        >
+                          0%
+                        </button>
+                      </div>
+
+                      {/* Total Amount (Preserved) */}
+                      <div className="flex flex-col items-end min-w-[70px]">
+                        <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                          SAR {currentTotal.toFixed(2)}
+                        </span>
+                        <span className="text-[9px] text-slate-400 flex items-center gap-0.5" title="Amount locked when toggling VAT">
+                          <Lock className="w-2 h-2 text-slate-400" />
+                          <span>Locked</span>
+                        </span>
+                      </div>
+
+                      {items.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveItem(idx)}
+                          className="p-1 text-slate-400 hover:text-rose-500 cursor-pointer"
+                          title="Remove item"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 
@@ -311,6 +432,95 @@ export const ManualExpenseModal: React.FC<ManualExpenseModalProps> = ({
             </button>
           </div>
         </form>
+
+        {/* In-Modal Choice Creation & Deletion */}
+        {choiceModalItemIdx !== null && (
+          <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/60 backdrop-blur-2xs">
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl p-5 max-w-sm w-full space-y-4 shadow-2xl">
+              <h4 className="font-bold text-sm text-slate-900 dark:text-white">
+                Add Product Choice Classification
+              </h4>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Type a custom classification to assign to this item row:
+              </p>
+              <input
+                type="text"
+                autoFocus
+                value={newChoiceInput}
+                onChange={(e) => setNewChoiceInput(e.target.value)}
+                placeholder="e.g. Seafood & Poultry, Bakery, Packaging..."
+                className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-emerald-500 text-slate-900 dark:text-white"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && newChoiceInput.trim()) {
+                    const c = newChoiceInput.trim();
+                    const updated = saveCustomProductChoice(c);
+                    setProductChoices(updated);
+                    handleItemChange(choiceModalItemIdx, "productChoice", c);
+                    setNewChoiceInput("");
+                    setChoiceModalItemIdx(null);
+                  }
+                }}
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setChoiceModalItemIdx(null)}
+                  className="px-3 py-1.5 text-xs text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (newChoiceInput.trim()) {
+                      const c = newChoiceInput.trim();
+                      const updated = saveCustomProductChoice(c);
+                      setProductChoices(updated);
+                      handleItemChange(choiceModalItemIdx, "productChoice", c);
+                      setNewChoiceInput("");
+                      setChoiceModalItemIdx(null);
+                    }
+                  }}
+                  className="px-3 py-1.5 text-xs font-bold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 cursor-pointer"
+                >
+                  Add Choice
+                </button>
+              </div>
+
+              {/* Manage Custom Choices with Delete */}
+              {getCustomOnlyProductChoices().length > 0 && (
+                <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2">
+                  <h5 className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                    Delete Custom Choices
+                  </h5>
+                  <div className="max-h-32 overflow-y-auto space-y-1.5 pr-1">
+                    {getCustomOnlyProductChoices().map((choice) => (
+                      <div
+                        key={choice}
+                        className="flex items-center justify-between px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 rounded-lg text-xs"
+                      >
+                        <span className="font-medium text-slate-800 dark:text-slate-200 truncate pr-2">
+                          {choice}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updated = deleteCustomProductChoice(choice);
+                            setProductChoices(updated);
+                          }}
+                          className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50 rounded transition cursor-pointer"
+                          title={`Delete "${choice}"`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

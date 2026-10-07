@@ -1,7 +1,7 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -44,21 +44,18 @@ function containsArabic(text: string): boolean {
 
 // Normalize MIME types for Gemini Vision
 function normalizeMimeType(mime?: string, base64?: string): string {
-  if (mime) {
-    const lower = mime.toLowerCase();
-    if (lower === "image/jpg" || lower === "image/pjpeg") return "image/jpeg";
-    if (lower.includes("pdf")) return "application/pdf";
-    if (lower.includes("png")) return "image/png";
-    if (lower.includes("webp")) return "image/webp";
-    // HEIC/HEIF cannot be ingested directly as image/heic by Gemini API
-    if (lower.includes("heic") || lower.includes("heif")) return "image/jpeg";
-    if (lower.includes("jpeg")) return "image/jpeg";
-  }
   if (base64) {
     if (base64.startsWith("/9j/")) return "image/jpeg";
     if (base64.startsWith("iVBORw0KGgo")) return "image/png";
     if (base64.startsWith("JVBERi0")) return "application/pdf";
     if (base64.startsWith("UklGR")) return "image/webp";
+  }
+  if (mime) {
+    const lower = mime.toLowerCase();
+    if (lower.includes("pdf")) return "application/pdf";
+    if (lower.includes("png")) return "image/png";
+    if (lower.includes("webp")) return "image/webp";
+    if (lower.includes("jpg") || lower.includes("jpeg") || lower.includes("pjpeg")) return "image/jpeg";
   }
   return "image/jpeg";
 }
@@ -73,9 +70,10 @@ async function generateWithFallback(
     contents: any;
     config?: any;
     primaryModel?: string;
+    timeoutMs?: number;
   }
 ) {
-  // Prioritize active and available models; gemini-3.1-flash-lite is fastest & highly available
+  // Prioritize active, fast, and available models; gemini-3.1-flash-lite has near-zero latency
   const modelsToTry = [
     params.primaryModel || "gemini-3.1-flash-lite",
     "gemini-3.1-flash-lite",
@@ -85,19 +83,29 @@ async function generateWithFallback(
 
   const uniqueModels = Array.from(new Set(modelsToTry));
   let lastError: any = null;
+  const timeoutLimit = params.timeoutMs || 35000;
 
   for (let mIdx = 0; mIdx < uniqueModels.length; mIdx++) {
     const currentModel = uniqueModels[mIdx];
     try {
-      // 12-second abort timeout per model attempt
+      const modelConfig: any = { ...(params.config || {}) };
+
+      // Set low thinking level for Gemini 3 models to prevent reasoning overhead and latency
+      if (currentModel.startsWith("gemini-3") && !modelConfig.thinkingConfig) {
+        modelConfig.thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };
+      }
+
       const responsePromise = ai.models.generateContent({
         model: currentModel,
         contents: params.contents,
-        config: params.config,
+        config: modelConfig,
       });
 
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`Timeout after 12s on model ${currentModel}`)), 12000)
+        setTimeout(
+          () => reject(new Error(`Timeout after ${Math.round(timeoutLimit / 1000)}s on model ${currentModel}`)),
+          timeoutLimit
+        )
       );
 
       const response: any = await Promise.race([responsePromise, timeoutPromise]);
@@ -130,6 +138,12 @@ function cleanAndParseJson(raw: string): any {
     const lastBrace = cleaned.lastIndexOf("}");
     if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
       const sub = cleaned.substring(firstBrace, lastBrace + 1);
+      return JSON.parse(sub);
+    }
+    const firstBracket = cleaned.indexOf("[");
+    const lastBracket = cleaned.lastIndexOf("]");
+    if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+      const sub = cleaned.substring(firstBracket, lastBracket + 1);
       return JSON.parse(sub);
     }
     throw new Error("Unable to parse structured JSON from OCR response.");
@@ -279,23 +293,19 @@ app.post("/api/ocr", async (req, res) => {
   try {
     const { imageBase64, mimeType, filename } = req.body || {};
 
-    if (!imageBase64) {
-      const fallback = getSimulatedExtraction(filename);
-      return res.json(fallback);
+    if (!imageBase64 || typeof imageBase64 !== "string" || imageBase64.trim().length === 0) {
+      return res.status(400).json({ error: "No receipt image data provided in upload." });
     }
 
     const ai = getAI();
     if (!ai) {
-      console.warn("GEMINI_API_KEY environment variable is not defined on server. Returning high-fidelity simulated receipt extraction.");
-      const fallback = getSimulatedExtraction(filename);
-      return res.json({
-        ...fallback,
-        notes: (fallback.notes || "") + " (AI key not detected on server - demo data populated)",
+      return res.status(500).json({
+        error: "GEMINI_API_KEY is not configured on the server. Please check settings.",
       });
     }
 
     // Clean base64 string
-    const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, "");
+    const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, "").trim().replace(/\s+/g, "");
     const effectiveMimeType = normalizeMimeType(mimeType, cleanBase64);
 
     const prompt = `You are a highly resilient and expert OCR receipt and financial parser.
@@ -312,7 +322,7 @@ Extract and structure ALL available receipt information into JSON:
 8. "date": Date in YYYY-MM-DD format (use current date if not visible).
 9. "time": Time in HH:MM format (24-hour).
 10. "currency": Currency code (e.g. "SAR", "USD", "AED", "EUR", "EGP", "GBP", "KWD", "QAR"). Default "SAR" if from Saudi Arabia or if currency symbol is SAR / SR / ر.س.
-11. "category": Best matching category from: ["Food & Dining", "Kitchen Supplies", "Household", "Electronics", "Utilities", "Maintenance", "Ingredients", "Beverages", "Packaging", "Other"].
+11. "category": Best matching category from: ["Food & Dining", "Fresh Product", "Kitchen Supplies", "Household", "Electronics", "Utilities", "Maintenance", "Ingredients", "Beverages", "Packaging", "Other"].
 12. "paymentMethod": "Card", "Cash", "Mada", "Apple Pay", "Bank Transfer", "Online", or "Other".
 13. "items": Array of itemized products or services. If individual items are not completely listed or photo is cut off, create line items for whatever is visible, or at minimum one item representing the total purchase:
     - "description": Product name/service description as written.
@@ -331,7 +341,7 @@ Extract and structure ALL available receipt information into JSON:
 Return strictly valid JSON only.`;
 
     const { response, modelUsed } = await generateWithFallback(ai, {
-      primaryModel: "gemini-3.8-flash",
+      primaryModel: "gemini-3.1-flash-lite",
       contents: [
         {
           inlineData: {
@@ -385,24 +395,16 @@ Return strictly valid JSON only.`;
     return res.json(parsed);
   } catch (error: any) {
     console.error("Gemini OCR extraction error:", error);
-    try {
-      const fallback = getSimulatedExtraction(req.body?.filename);
-      return res.json({
-        ...fallback,
-        notes: (fallback.notes || "") + " (Extracted via resilient fallback mode)",
-      });
-    } catch {
-      return res.status(500).json({
-        error: error.message || "Failed to process receipt with Gemini Vision OCR.",
-      });
-    }
+    return res.status(500).json({
+      error: error.message || "Failed to process receipt with Gemini Vision OCR. Please ensure the image is clear and legible.",
+    });
   }
 });
 
 // POST /api/parse-text: Parses raw pasted receipt text or SMS confirmation without any image requirement
 app.post("/api/parse-text", async (req, res) => {
   try {
-    const { textContent } = req.body;
+    const textContent = req.body.textContent || req.body.text;
 
     if (!textContent || typeof textContent !== "string" || textContent.trim().length === 0) {
       return res.status(400).json({ error: "No text content provided for parsing." });
@@ -459,7 +461,7 @@ Extract the following JSON fields:
 8. "date": Transaction date formatted as YYYY-MM-DD.
 9. "time": Transaction time formatted as HH:MM.
 10. "currency": Currency code (e.g., "SAR", "USD", "AED", "EUR"). Default "SAR".
-11. "category": Best matching category from: ["Food & Dining", "Kitchen Supplies", "Household", "Electronics", "Utilities", "Maintenance", "Ingredients", "Beverages", "Packaging", "Other"].
+11. "category": Best matching category from: ["Food & Dining", "Fresh Product", "Kitchen Supplies", "Household", "Electronics", "Utilities", "Maintenance", "Ingredients", "Beverages", "Packaging", "Other"].
 12. "paymentMethod": "Card", "Cash", "Mada", "Apple Pay", "Bank Transfer", "Online", or "Other".
 13. "items": Array of itemized products:
     - "description": Product name
@@ -478,7 +480,7 @@ Extract the following JSON fields:
 Return ONLY valid JSON.`;
 
     const { response, modelUsed } = await generateWithFallback(ai, {
-      primaryModel: "gemini-3.8-flash",
+      primaryModel: "gemini-3.1-flash-lite",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -552,7 +554,7 @@ app.post("/api/translate", async (req, res) => {
 
       const prompt = `Translate the following Arabic merchant/product/address text into natural professional English. Return ONLY the English translation string without any commentary or quotes:\n\n${text}`;
       const { response } = await generateWithFallback(ai, {
-        primaryModel: "gemini-3.8-flash",
+        primaryModel: "gemini-3.1-flash-lite",
         contents: prompt,
       });
       return res.json({ translatedText: response.text?.trim() || text });
@@ -574,7 +576,7 @@ ${JSON.stringify(items)}
 Return strictly a JSON array with objects matching: { "description": "English translated text" }`;
 
       const { response } = await generateWithFallback(ai, {
-        primaryModel: "gemini-3.8-flash",
+        primaryModel: "gemini-3.1-flash-lite",
         contents: prompt,
         config: {
           responseMimeType: "application/json",
