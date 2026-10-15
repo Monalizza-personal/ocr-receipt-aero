@@ -7,12 +7,14 @@ interface PasteTextModalProps {
   isOpen: boolean;
   onClose: () => void;
   onReceiptProcessed: (receipt: ExpenseReceipt) => void;
+  defaultUploadRefNo?: string;
 }
 
 export const PasteTextModal: React.FC<PasteTextModalProps> = ({
   isOpen,
   onClose,
   onReceiptProcessed,
+  defaultUploadRefNo,
 }) => {
   const [textContent, setTextContent] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
@@ -74,6 +76,7 @@ export const PasteTextModal: React.FC<PasteTextModalProps> = ({
         storePhone: data.storePhone || "",
         taxId: data.taxId || "",
         invoiceNo: data.invoiceNo || "TXT-" + Math.floor(1000 + Math.random() * 9000),
+        uploadRefNo: defaultUploadRefNo,
         date: data.date || new Date().toISOString().split("T")[0],
         time: data.time || new Date().toTimeString().substring(0, 5),
         currency: data.currency || "SAR",
@@ -95,9 +98,11 @@ export const PasteTextModal: React.FC<PasteTextModalProps> = ({
               totalAmount: Number(it.totalAmount) || (Number(it.quantity) || 1) * (Number(it.unitPrice) || 0),
               category: it.category || data.category || "Food & Dining",
               productChoice: it.productChoice || "General Supply",
+              uploadRefNo: defaultUploadRefNo,
             }))
           : [],
         createdAt: Date.now(),
+        uploadedAt: new Date().toISOString(),
       };
 
       onReceiptProcessed(newReceipt);

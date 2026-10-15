@@ -1,4 +1,5 @@
 import { ExpenseReceipt } from "../types";
+import { formatMalaysiaDate, formatMalaysiaTime } from "./dateUtils";
 
 function escapeCSV(val: any): string {
   if (val === null || val === undefined) return '""';
@@ -27,10 +28,13 @@ function triggerDownload(csvContent: string, filename: string) {
 export function exportReceiptsCSV(receipts: ExpenseReceipt[]) {
   const headers = [
     "Receipt ID",
+    "Upload File Ref #",
+    "Upload Date (MYT)",
+    "Upload Time (MYT)",
     "Merchant / Store Name",
     "Invoice / Receipt #",
-    "Transaction Date",
-    "Time",
+    "Receipt Date",
+    "Receipt Time",
     "Category",
     "Tax ID / VAT #",
     "Items Count",
@@ -45,6 +49,9 @@ export function exportReceiptsCSV(receipts: ExpenseReceipt[]) {
 
   const rows = receipts.map((r) => [
     escapeCSV(r.id),
+    escapeCSV(r.uploadRefNo || ""),
+    escapeCSV(formatMalaysiaDate(r.uploadedAt || r.createdAt)),
+    escapeCSV(formatMalaysiaTime(r.uploadedAt || r.createdAt, true)),
     escapeCSV(r.storeName),
     escapeCSV(r.invoiceNo || ""),
     escapeCSV(r.date),
@@ -68,8 +75,11 @@ export function exportReceiptsCSV(receipts: ExpenseReceipt[]) {
 
 export function exportLineItemsCSV(receipts: ExpenseReceipt[]) {
   const headers = [
+    "Upload File Ref #",
+    "Upload Date (MYT)",
+    "Upload Time (MYT)",
     "Merchant Store",
-    "Date",
+    "Receipt Date",
     "Invoice #",
     "Item Description",
     "Item Category",
@@ -87,6 +97,9 @@ export function exportLineItemsCSV(receipts: ExpenseReceipt[]) {
   receipts.forEach((r) => {
     (r.items || []).forEach((item) => {
       rows.push([
+        escapeCSV(item.uploadRefNo || r.uploadRefNo || ""),
+        escapeCSV(formatMalaysiaDate(r.uploadedAt || r.createdAt)),
+        escapeCSV(formatMalaysiaTime(r.uploadedAt || r.createdAt, true)),
         escapeCSV(r.storeName),
         escapeCSV(r.date),
         escapeCSV(r.invoiceNo || ""),

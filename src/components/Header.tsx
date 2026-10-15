@@ -10,9 +10,12 @@ import {
   Moon,
   Sun,
   PlusCircle,
+  Database,
+  User,
 } from "lucide-react";
 import { ExpenseReceipt } from "../types";
 import { exportReceiptsCSV, exportLineItemsCSV } from "../utils/csvExport";
+import { useAuth } from "../context/AuthContext";
 
 interface HeaderProps {
   receipts: ExpenseReceipt[];
@@ -22,6 +25,7 @@ interface HeaderProps {
   onOpenImportModal: () => void;
   isDarkMode: boolean;
   onToggleDarkMode: () => void;
+  onOpenAuthModal?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -32,7 +36,9 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenImportModal,
   isDarkMode,
   onToggleDarkMode,
+  onOpenAuthModal,
 }) => {
+  const { user, isConfigured } = useAuth();
   return (
     <header className="border-b border-slate-200/80 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md sticky top-0 z-30 transition-colors shadow-xs">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
@@ -131,6 +137,40 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <Trash2 className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Clear</span>
+          </button>
+
+          {/* Supabase Cloud Sync / Auth Button */}
+          <button
+            id="btn-supabase-auth"
+            onClick={onOpenAuthModal}
+            type="button"
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-xl transition cursor-pointer border ${
+              user
+                ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/60 hover:bg-emerald-100"
+                : isConfigured
+                ? "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200/60 dark:border-slate-700/60 hover:bg-slate-200/80"
+                : "bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800/60 hover:bg-amber-100/80"
+            }`}
+            title={
+              user
+                ? `Logged in as ${user.email} (Supabase Auth)`
+                : isConfigured
+                ? "Sign in to Supabase account"
+                : "Configure Supabase Publishable Key"
+            }
+          >
+            {user ? (
+              <>
+                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="hidden sm:inline max-w-[120px] truncate">{user.email?.split("@")[0]}</span>
+                <span className="sm:hidden">Account</span>
+              </>
+            ) : (
+              <>
+                <Database className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                <span className="hidden sm:inline">Supabase</span>
+              </>
+            )}
           </button>
 
           {/* Theme Dark/Light Toggle */}

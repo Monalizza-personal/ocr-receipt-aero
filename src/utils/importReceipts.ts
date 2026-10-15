@@ -112,7 +112,7 @@ function normalizeDate(val?: string): string {
 /**
  * Parse imported JSON or CSV file into ExpenseReceipt array
  */
-export function parseImportedReceiptsFile(fileContent: string, filename = ""): ExpenseReceipt[] {
+export function parseImportedReceiptsFile(fileContent: string, filename = "", defaultUploadRefNo?: string): ExpenseReceipt[] {
   const trimmed = fileContent.trim();
   if (!trimmed) throw new Error("The imported file is empty.");
 
@@ -138,6 +138,7 @@ export function parseImportedReceiptsFile(fileContent: string, filename = ""): E
           const grandTotal = cleanNumber(item.grandTotal ?? item.totalAmount ?? item.amount ?? item.total ?? 0);
           const vatTotal = cleanNumber(item.vatTotal ?? item.tax ?? (grandTotal > 0 ? grandTotal - grandTotal / 1.15 : 0));
           const subtotal = cleanNumber(item.subtotal ?? (grandTotal - vatTotal));
+          const itemUploadRef = item.uploadRefNo || item.uploadRef || item.refNo || item.bundleRef || defaultUploadRefNo;
 
           validReceipts.push({
             id: item.id || `imp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -148,6 +149,7 @@ export function parseImportedReceiptsFile(fileContent: string, filename = ""): E
             storePhone: item.storePhone || item.phone || "",
             taxId: item.taxId || item.vatNo || "",
             invoiceNo: item.invoiceNo || item.invoice || `INV-${Math.floor(1000 + Math.random() * 9000)}`,
+            uploadRefNo: itemUploadRef,
             date: normalizeDate(item.date),
             time: item.time || "12:00",
             currency: item.currency || "SAR",
@@ -186,6 +188,9 @@ export function parseImportedReceiptsFile(fileContent: string, filename = ""): E
             thumbnailUrl: item.thumbnailUrl,
             isPdf: Boolean(item.isPdf),
             createdAt: item.createdAt || Date.now(),
+            uploadedAt:
+              item.uploadedAt ||
+              (item.createdAt ? new Date(item.createdAt).toISOString() : new Date().toISOString()),
           });
         }
       }
@@ -209,6 +214,7 @@ export function parseImportedReceiptsFile(fileContent: string, filename = ""): E
   const isLineItemsCSV = rawHeaders.includes("itemdescription") && (rawHeaders.includes("parentreceiptid") || rawHeaders.includes("unitprice"));
 
   if (isLineItemsCSV) {
+    const uploadRefIdx = rawHeaders.findIndex((h) => h.includes("upload") || h.includes("bundleref") || (h.includes("ref") && !h.includes("pref")));
     const storeIdx = rawHeaders.findIndex((h) => h.includes("merchant") || h.includes("store"));
     const dateIdx = rawHeaders.findIndex((h) => h.includes("date"));
     const invIdx = rawHeaders.findIndex((h) => h.includes("invoice"));
@@ -222,12 +228,13 @@ export function parseImportedReceiptsFile(fileContent: string, filename = ""): E
     const currIdx = rawHeaders.findIndex((h) => h.includes("currency"));
     const parentIdIdx = rawHeaders.findIndex((h) => h.includes("parentreceiptid"));
 
-    const grouped = new Map<string, { store: string; date: string; invoiceNo: string; currency: string; items: ExpenseItem[] }>();
+    const grouped = new Map<string, { store: string; date: string; invoiceNo: string; uploadRefNo?: string; currency: string; items: ExpenseItem[] }>();
 
     for (const row of dataRows) {
       const store = (storeIdx >= 0 ? row[storeIdx] : "") || "Imported Merchant";
       const date = (dateIdx >= 0 ? row[dateIdx] : "") || new Date().toISOString().split("T")[0];
       const invoiceNo = (invIdx >= 0 ? row[invIdx] : "") || "";
+      const rowUploadRef = (uploadRefIdx >= 0 ? row[uploadRefIdx] : "") || defaultUploadRefNo;
       const groupKey = parentIdIdx >= 0 && row[parentIdIdx] ? row[parentIdIdx] : `${store}_${date}_${invoiceNo}`;
       const currency = (currIdx >= 0 ? row[currIdx] : "") || "SAR";
 
@@ -245,10 +252,11 @@ export function parseImportedReceiptsFile(fileContent: string, filename = ""): E
         unitPrice,
         vatAmount,
         totalAmount,
+        uploadRefNo: rowUploadRef,
       };
 
       if (!grouped.has(groupKey)) {
-        grouped.set(groupKey, { store, date, invoiceNo, currency, items: [item] });
+        grouped.set(groupKey, { store, date, invoiceNo, uploadRefNo: rowUploadRef, currency, items: [item] });
       } else {
         grouped.get(groupKey)!.items.push(item);
       }
@@ -265,6 +273,7 @@ export function parseImportedReceiptsFile(fileContent: string, filename = ""): E
         storeName: val.store,
         originalStoreName: val.store,
         invoiceNo: val.invoiceNo || `INV-${Math.floor(1000 + Math.random() * 9000)}`,
+        uploadRefNo: val.uploadRefNo || defaultUploadRefNo,
         date: normalizeDate(val.date),
         time: "12:00",
         currency: val.currency || "SAR",
@@ -276,6 +285,7 @@ export function parseImportedReceiptsFile(fileContent: string, filename = ""): E
         notes: `Imported line items (${val.items.length} items)`,
         items: val.items,
         createdAt: Date.now(),
+        uploadedAt: new Date().toISOString(),
       });
     });
 
@@ -283,13 +293,15 @@ export function parseImportedReceiptsFile(fileContent: string, filename = ""): E
   }
 
   // Standard Receipts CSV
+  const uploadRefIdx = rawHeaders.findIndex((h) => h.includes("upload") || h.includes("bundleref") || (h.includes("ref") && !h.includes("pref") && !h.includes("invoice")));
+  const uploadDateIdx = rawHeaders.findIndex((h) => h.includes("uploaddate") || h.includes("uploadedat") || h.includes("uploadtime"));
   const storeIdx = rawHeaders.findIndex((h) => h.includes("merchant") || h.includes("store") || h.includes("vendor") || h.includes("name") || h.includes("supplier"));
   const dateIdx = rawHeaders.findIndex((h) => h.includes("date") || h.includes("time"));
   const grandTotalIdx = rawHeaders.findIndex((h) => h.includes("grandtotal") || h.includes("total") || h.includes("amount") || h.includes("cost") || h.includes("paid"));
   const subtotalIdx = rawHeaders.findIndex((h) => h.includes("subtotal") || h.includes("beforevat"));
   const vatIdx = rawHeaders.findIndex((h) => h.includes("vat") || h.includes("tax"));
   const categoryIdx = rawHeaders.findIndex((h) => h.includes("category"));
-  const invoiceIdx = rawHeaders.findIndex((h) => h.includes("invoice") || h.includes("receipt") || h.includes("bill") || h.includes("ref"));
+  const invoiceIdx = rawHeaders.findIndex((h) => h.includes("invoice") || h.includes("receipt") || h.includes("bill"));
   const currencyIdx = rawHeaders.findIndex((h) => h.includes("currency"));
   const paymentIdx = rawHeaders.findIndex((h) => h.includes("payment") || h.includes("method"));
   const taxIdIdx = rawHeaders.findIndex((h) => h.includes("taxid") || h.includes("vatno") || h.includes("vat#"));
@@ -308,12 +320,14 @@ export function parseImportedReceiptsFile(fileContent: string, filename = ""): E
     const grandTotal = grandTotalIdx >= 0 ? cleanNumber(row[grandTotalIdx]) : 0;
     const vatTotal = vatIdx >= 0 ? cleanNumber(row[vatIdx]) : grandTotal * 0.15;
     const subtotal = subtotalIdx >= 0 ? cleanNumber(row[subtotalIdx]) : Math.max(0, grandTotal - vatTotal);
+    const rowUploadRef = (uploadRefIdx >= 0 ? row[uploadRefIdx] : "") || defaultUploadRefNo;
 
     parsedReceipts.push({
       id: `rec_imp_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
       storeName,
       originalStoreName: storeName,
       invoiceNo: (invoiceIdx >= 0 ? row[invoiceIdx] : "") || `INV-${Math.floor(1000 + Math.random() * 9000)}`,
+      uploadRefNo: rowUploadRef,
       date: dateVal,
       time: "12:00",
       category: (categoryIdx >= 0 ? row[categoryIdx] : "") || "Food & Dining",
@@ -335,9 +349,17 @@ export function parseImportedReceiptsFile(fileContent: string, filename = ""): E
           totalAmount: grandTotal,
           category: (categoryIdx >= 0 ? row[categoryIdx] : "") || "Food & Dining",
           productChoice: "Imported Expense",
+          uploadRefNo: rowUploadRef,
         },
       ],
       createdAt: Date.now(),
+      uploadedAt: (() => {
+        if (uploadDateIdx >= 0 && row[uploadDateIdx]?.trim()) {
+          const parsed = new Date(row[uploadDateIdx].trim());
+          if (!isNaN(parsed.getTime())) return parsed.toISOString();
+        }
+        return new Date().toISOString();
+      })(),
     });
   }
 

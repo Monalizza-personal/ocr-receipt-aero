@@ -9,6 +9,7 @@ export interface ExpenseItem {
   hasVat?: boolean;
   category?: string;
   productChoice?: string;
+  uploadRefNo?: string;
 }
 
 export interface ExpenseReceipt {
@@ -20,6 +21,7 @@ export interface ExpenseReceipt {
   storePhone?: string;
   taxId?: string;
   invoiceNo?: string;
+  uploadRefNo?: string; // Upload File Reference Number (e.g. UPL-20261007-001)
   date: string;
   time?: string;
   currency: string;
@@ -34,7 +36,8 @@ export interface ExpenseReceipt {
   isPdf?: boolean;
   isTranslated?: boolean;
   notes?: string;
-  createdAt?: number;
+  createdAt?: number; // Legacy epoch ms timestamp
+  uploadedAt?: string; // ISO 8601 UTC upload timestamp (e.g. 2026-10-15T04:15:30.000Z)
 }
 
 export interface CategorySummary {

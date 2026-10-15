@@ -22,6 +22,7 @@ import {
   RotateCcw,
   Download,
   SlidersHorizontal,
+  Clock,
 } from "lucide-react";
 import { ExpenseReceipt, ViewTab, ExpenseItem } from "../types";
 import { CATEGORY_COLORS, DEFAULT_CATEGORIES, DEFAULT_PRODUCT_CHOICES } from "../data/seedData";
@@ -33,6 +34,13 @@ import {
   toggleItemVat,
   recalculateReceiptTotals,
 } from "../utils/vatCalculations";
+import {
+  formatMalaysiaDate,
+  formatMalaysiaTime,
+  formatMalaysiaDateTime,
+  getMalaysiaDateYMD,
+  getReceiptUploadTimestamp,
+} from "../utils/dateUtils";
 
 interface LedgerTableProps {
   receipts: ExpenseReceipt[];
@@ -54,8 +62,9 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
   const [startDate, setStartDate] = useState<string>("");
   const [endDate, setEndDate] = useState<string>("");
   const [datePreset, setDatePreset] = useState<string>("all");
+  const [dateFilterType, setDateFilterType] = useState<"receipt" | "upload">("receipt");
   const [vatFilter, setVatFilter] = useState<"all" | "with-vat" | "no-vat">("all");
-  const [sortBy, setSortBy] = useState<string>("date-desc");
+  const [sortBy, setSortBy] = useState<string>("upload-desc");
   const [editingCell, setEditingCell] = useState<{ id: string; field: string } | null>(null);
   const [editValue, setEditValue] = useState<string>("");
   const [receiptPendingDelete, setReceiptPendingDelete] = useState<ExpenseReceipt | null>(null);
@@ -112,7 +121,7 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
     } else if (sortBy === `${field}-asc`) {
       setSortBy(`${field}-desc`);
     } else {
-      if (["date", "amount", "vat", "subtotal", "unitPrice", "qty", "items"].includes(field)) {
+      if (["upload", "date", "amount", "vat", "subtotal", "unitPrice", "qty", "items"].includes(field)) {
         setSortBy(`${field}-desc`);
       } else {
         setSortBy(`${field}-asc`);
@@ -152,6 +161,8 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
       parentReceiptId: r.id,
       storeName: r.storeName,
       date: r.date,
+      uploadedAt: r.uploadedAt,
+      createdAt: r.createdAt,
       invoiceNo: r.invoiceNo,
       currency: r.currency,
       imageUrl: r.imageUrl,
@@ -209,12 +220,17 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
     });
   };
 
-  const matchDate = (dateStr?: string) => {
+  const matchDate = (dateStr?: string, uploadIsoOrTs?: any) => {
     if (!startDate && !endDate) return true;
-    if (!dateStr) return false;
-    const clean = dateStr.trim().slice(0, 10);
-    if (startDate && clean < startDate) return false;
-    if (endDate && clean > endDate) return false;
+    const targetDate =
+      dateFilterType === "upload"
+        ? getMalaysiaDateYMD(uploadIsoOrTs)
+        : dateStr
+        ? dateStr.trim().slice(0, 10)
+        : "";
+    if (!targetDate) return false;
+    if (startDate && targetDate < startDate) return false;
+    if (endDate && targetDate > endDate) return false;
     return true;
   };
 
@@ -236,7 +252,7 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
             r.items.some((it) => (it?.description || "").toLowerCase().includes(sTerm)));
 
         const matchCat = selectedCategory === "All Categories" || r.category === selectedCategory;
-        const inDateRange = matchDate(r.date);
+        const inDateRange = matchDate(r.date, r.uploadedAt || r.createdAt);
 
         const matchVat =
           vatFilter === "all"
@@ -254,6 +270,10 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
         const validTimeB = isNaN(timeB) ? 0 : timeB;
 
         switch (sortBy) {
+          case "upload-desc":
+            return getReceiptUploadTimestamp(b) - getReceiptUploadTimestamp(a);
+          case "upload-asc":
+            return getReceiptUploadTimestamp(a) - getReceiptUploadTimestamp(b);
           case "date-desc":
             return validTimeB - validTimeA;
           case "date-asc":
@@ -287,10 +307,10 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
           case "items-asc":
             return (a.items ? a.items.length : 0) - (b.items ? b.items.length : 0);
           default:
-            return validTimeB - validTimeA;
+            return getReceiptUploadTimestamp(b) - getReceiptUploadTimestamp(a);
         }
       });
-  }, [receipts, searchTerm, selectedCategory, startDate, endDate, vatFilter, sortBy]);
+  }, [receipts, searchTerm, selectedCategory, startDate, endDate, dateFilterType, vatFilter, sortBy]);
 
   // Filter line items
   const filteredLineItems = useMemo(() => {
@@ -313,7 +333,7 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
         const matchChoice =
           selectedChoice === "All Choices" || (it.productChoice || "General") === selectedChoice;
 
-        const inDateRange = matchDate(it.date);
+        const inDateRange = matchDate(it.date, it.uploadedAt || it.createdAt);
         const hasVat = isItemVatApplicable(it);
         const matchVat =
           vatFilter === "all" ? true : vatFilter === "with-vat" ? hasVat : !hasVat;
@@ -334,6 +354,10 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
           (Number(b.unitPrice) || 0) * (Number(b.quantity) || 1) + (Number(b.vatAmount) || 0);
 
         switch (sortBy) {
+          case "upload-desc":
+            return getReceiptUploadTimestamp(b) - getReceiptUploadTimestamp(a);
+          case "upload-asc":
+            return getReceiptUploadTimestamp(a) - getReceiptUploadTimestamp(b);
           case "date-desc":
             return validTimeB - validTimeA;
           case "date-asc":
@@ -371,15 +395,16 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
           case "vat-asc":
             return (Number(a.vatAmount) || 0) - (Number(b.vatAmount) || 0);
           default:
-            return validTimeB - validTimeA;
+            return getReceiptUploadTimestamp(b) - getReceiptUploadTimestamp(a);
         }
       });
-  }, [allLineItems, searchTerm, selectedCategory, selectedChoice, startDate, endDate, vatFilter, sortBy]);
+  }, [allLineItems, searchTerm, selectedCategory, selectedChoice, startDate, endDate, dateFilterType, vatFilter, sortBy]);
 
   const isFiltered =
     searchTerm.trim() !== "" ||
     startDate !== "" ||
     endDate !== "" ||
+    dateFilterType !== "receipt" ||
     selectedCategory !== "All Categories" ||
     (activeTab === "items" && selectedChoice !== "All Choices") ||
     vatFilter !== "all";
@@ -389,6 +414,7 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
     setStartDate("");
     setEndDate("");
     setDatePreset("all");
+    setDateFilterType("receipt");
     setSelectedCategory("All Categories");
     setSelectedChoice("All Choices");
     setVatFilter("all");
@@ -532,6 +558,21 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
 
           {/* Date Range Selector: Quick Presets + From Date + To Date */}
           <div className="flex flex-wrap items-center gap-2 bg-slate-50 dark:bg-slate-800/50 p-1.5 rounded-xl border border-slate-200/60 dark:border-slate-700/60">
+            {/* Filter Target Selector: Receipt Date vs Upload Date */}
+            <div className="relative">
+              <select
+                id="select-date-filter-type"
+                value={dateFilterType}
+                onChange={(e) => setDateFilterType(e.target.value as "receipt" | "upload")}
+                className="px-2.5 py-1.5 text-xs font-bold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-emerald-800 dark:text-emerald-300 pr-7 appearance-none cursor-pointer focus:outline-emerald-500 shadow-2xs"
+                title="Select date field to filter by: Receipt Date or Upload Date (Malaysia Time)"
+              >
+                <option value="receipt">Receipt Date</option>
+                <option value="upload">Upload Date (MYT)</option>
+              </select>
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+            </div>
+
             {/* Quick Preset Selector */}
             <div className="relative">
               <select
@@ -696,8 +737,10 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
                 onChange={(e) => setSortBy(e.target.value as any)}
                 className="px-3 py-2 text-xs font-bold bg-slate-50 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700 rounded-xl focus:outline-emerald-500 text-slate-700 dark:text-slate-300 pr-8 appearance-none cursor-pointer"
               >
-                <option value="date-desc">Date: Newest First</option>
-                <option value="date-asc">Date: Oldest First</option>
+                <option value="upload-desc">Upload Date: Newest First</option>
+                <option value="upload-asc">Upload Date: Oldest First</option>
+                <option value="date-desc">Receipt Date: Newest First</option>
+                <option value="date-asc">Receipt Date: Oldest First</option>
                 <option value="amount-desc">Amount: Highest First</option>
                 <option value="amount-asc">Amount: Lowest First</option>
                 <option value="store-asc">Merchant: A → Z</option>
@@ -743,6 +786,7 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
                 <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 text-xs font-semibold shadow-2xs">
                   <Calendar className="w-3 h-3 text-emerald-600" />
                   <span>
+                    {dateFilterType === "upload" ? "Upload Date (MYT):" : "Receipt Date:"}{" "}
                     {startDate ? startDate : "Start"} → {endDate ? endDate : "End"}
                   </span>
                   <button
@@ -891,11 +935,21 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
                 <th
                   className="py-3 px-3 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 transition select-none group/th"
                   onClick={() => handleSortHeader("date")}
-                  title="Click to sort by Transaction Date"
+                  title="Click to sort by Transaction Receipt Date"
                 >
                   <div className="flex items-center gap-1">
-                    <span>Date</span>
+                    <span>Receipt Date</span>
                     {renderSortIcon("date")}
+                  </div>
+                </th>
+                <th
+                  className="py-3 px-3 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 transition select-none group/th"
+                  onClick={() => handleSortHeader("upload")}
+                  title="Click to sort by Upload Date & Time (Malaysia Time)"
+                >
+                  <div className="flex items-center gap-1">
+                    <span>Upload Date & Time</span>
+                    {renderSortIcon("upload")}
                   </div>
                 </th>
                 <th
@@ -955,7 +1009,7 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
               {filteredReceipts.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="py-12 text-center">
+                  <td colSpan={12} className="py-12 text-center">
                     <div className="flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 space-y-2">
                       <p className="text-sm font-medium">No expense records found matching filters.</p>
                       {isFiltered && (
@@ -1064,10 +1118,11 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
                         )}
                       </td>
 
-                      {/* Date */}
+                      {/* Receipt Date */}
                       <td
                         className="py-2.5 px-3 text-slate-600 dark:text-slate-300 tabular-nums cursor-pointer"
                         onDoubleClick={() => startEditing(r.id, "date", r.date)}
+                        title="Double-click to edit receipt date"
                       >
                         {isEditingDate ? (
                           <input
@@ -1080,8 +1135,24 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
                             className="px-1 py-1 bg-white dark:bg-slate-800 border border-emerald-500 rounded text-xs"
                           />
                         ) : (
-                          <span>{r.date}</span>
+                          <div>
+                            <span className="font-semibold text-slate-800 dark:text-slate-200">{r.date}</span>
+                            {r.time && <span className="text-[10px] text-slate-400 block">{r.time}</span>}
+                          </div>
                         )}
+                      </td>
+
+                      {/* Upload Date & Time (Malaysia Time - Asia/Kuala_Lumpur) */}
+                      <td className="py-2.5 px-3">
+                        <div className="flex flex-col whitespace-nowrap">
+                          <span className="font-semibold text-slate-800 dark:text-slate-200 tabular-nums">
+                            {formatMalaysiaDate(r.uploadedAt || r.createdAt)}
+                          </span>
+                          <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
+                            <Clock className="w-2.5 h-2.5 shrink-0 inline" />
+                            <span>{formatMalaysiaTime(r.uploadedAt || r.createdAt, true)} (MYT)</span>
+                          </span>
+                        </div>
                       </td>
 
                       {/* Category Badge */}
@@ -1220,11 +1291,21 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
                   <th
                     className="py-3 px-3 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 transition select-none group/th"
                     onClick={() => handleSortHeader("date")}
-                    title="Click to sort by Transaction Date"
+                    title="Click to sort by Transaction Receipt Date"
                   >
                     <div className="flex items-center gap-1">
-                      <span>Date</span>
+                      <span>Receipt Date</span>
                       {renderSortIcon("date")}
+                    </div>
+                  </th>
+                  <th
+                    className="py-3 px-3 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 transition select-none group/th"
+                    onClick={() => handleSortHeader("upload")}
+                    title="Click to sort by Upload Date (Malaysia Time)"
+                  >
+                    <div className="flex items-center gap-1">
+                      <span>Upload Date</span>
+                      {renderSortIcon("upload")}
                     </div>
                   </th>
                   <th
@@ -1293,7 +1374,7 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
                 {filteredLineItems.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="py-12 text-center">
+                    <td colSpan={11} className="py-12 text-center">
                       <div className="flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 space-y-2">
                         <p className="text-sm font-medium">No itemized products found matching filters.</p>
                         {isFiltered && (
@@ -1337,9 +1418,22 @@ export const LedgerTable: React.FC<LedgerTableProps> = ({
                           <span className="font-medium">{item.storeName}</span>
                         </td>
 
-                        {/* Transaction Date */}
-                        <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300 tabular-nums whitespace-nowrap font-medium">
+                        {/* Receipt Date */}
+                        <td className="py-2.5 px-3 text-slate-800 dark:text-slate-200 tabular-nums whitespace-nowrap font-medium">
                           {item.date}
+                        </td>
+
+                        {/* Upload Date & Time (Malaysia Time) */}
+                        <td className="py-2.5 px-3 whitespace-nowrap">
+                          <div className="flex flex-col">
+                            <span className="font-semibold text-slate-800 dark:text-slate-200 tabular-nums">
+                              {formatMalaysiaDate(item.uploadedAt || item.createdAt)}
+                            </span>
+                            <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
+                              <Clock className="w-2.5 h-2.5 shrink-0 inline" />
+                              <span>{formatMalaysiaTime(item.uploadedAt || item.createdAt, false)} (MYT)</span>
+                            </span>
+                          </div>
                         </td>
 
                         {/* Category Classification (Editable) */}

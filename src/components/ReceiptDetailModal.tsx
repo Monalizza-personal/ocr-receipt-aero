@@ -19,10 +19,18 @@ import {
   AlertCircle,
   Lock,
   Tag,
+  Clock,
+  CalendarCheck,
 } from "lucide-react";
 import { ExpenseReceipt, ExpenseItem } from "../types";
 import { containsArabic } from "../utils/arabicDetector";
 import { DEFAULT_CATEGORIES, DEFAULT_PRODUCT_CHOICES } from "../data/seedData";
+import {
+  formatMalaysiaDate,
+  formatMalaysiaTime,
+  formatMalaysiaDateTime,
+  getReceiptUploadIso,
+} from "../utils/dateUtils";
 import {
   STANDARD_VAT_RATE,
   isItemVatApplicable,
@@ -37,6 +45,8 @@ import {
   getStoredCategories,
   saveCustomCategory,
 } from "../utils/choices";
+import { getSignedReceiptImageUrl } from "../lib/supabaseService";
+import { useAuth } from "../context/AuthContext";
 
 interface ReceiptDetailModalProps {
   receipt: ExpenseReceipt | null;
@@ -76,10 +86,23 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
   const [targetItemIdxForChoice, setTargetItemIdxForChoice] = useState<number | null>(null);
   const [showConfirmDeleteReceipt, setShowConfirmDeleteReceipt] = useState(false);
   const [activeTab, setActiveTab] = useState<"details" | "image">("details");
+  const { user } = useAuth();
 
   useEffect(() => {
     if (receipt) {
       setFormData({ ...receipt });
+      if (
+        receipt.imageUrl &&
+        !receipt.imageUrl.startsWith("http") &&
+        !receipt.imageUrl.startsWith("data:") &&
+        !receipt.imageUrl.startsWith("blob:")
+      ) {
+        getSignedReceiptImageUrl(receipt.imageUrl).then((signed) => {
+          if (signed) {
+            setFormData((prev) => ({ ...prev, imageUrl: signed }));
+          }
+        });
+      }
     }
   }, [receipt]);
 
@@ -280,9 +303,16 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
     }));
   };
 
-  // Handle Save
+  // Handle Save (preserving upload timestamp and audit metadata)
+  const uploadIso = getReceiptUploadIso(receipt || formData);
+
   const handleSaveModal = () => {
-    onSave(formData);
+    const preservedUpload = receipt?.uploadedAt || formData.uploadedAt || uploadIso;
+    onSave({
+      ...formData,
+      uploadedAt: preservedUpload,
+      createdAt: receipt?.createdAt || formData.createdAt,
+    });
   };
 
   if (!receipt) return null;
@@ -297,12 +327,16 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
               <Receipt className="w-5 h-5" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <h3 className="font-extrabold text-base sm:text-lg tracking-tight text-slate-900 dark:text-white">
                   Receipt Layout & Itemized Ledger
                 </h3>
                 <span className="text-xs bg-slate-200/80 dark:bg-slate-800 text-slate-800 dark:text-slate-200 px-2.5 py-0.5 rounded-full font-bold">
                   {formData.invoiceNo || "INV-001"}
+                </span>
+                <span className="text-[11px] font-semibold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 px-2.5 py-0.5 rounded-full flex items-center gap-1 shadow-2xs">
+                  <Clock className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+                  <span>Uploaded: {formatMalaysiaDate(uploadIso)} {formatMalaysiaTime(uploadIso)} (MYT)</span>
                 </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -491,21 +525,37 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
                   />
                 </div>
 
-                {/* Date & Time */}
+                {/* Receipt Transaction Date */}
                 <div className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-                    Transaction Date
+                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 flex items-center justify-between">
+                    <span>Receipt Date (Transaction)</span>
+                    <span className="text-[10px] text-slate-400 font-normal">From Receipt</span>
                   </label>
                   <input
                     type="date"
                     value={formData.date}
                     onChange={(e) => setFormData({ ...formData, date: e.target.value })}
-                    className="w-full px-3 py-2 text-xs sm:text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-emerald-500"
+                    className="w-full px-3 py-2 text-xs sm:text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-emerald-500 font-medium"
+                  />
+                </div>
+
+                {/* Receipt Transaction Time */}
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 flex items-center justify-between">
+                    <span>Receipt Time</span>
+                    <span className="text-[10px] text-slate-400 font-normal">From Receipt</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.time || ""}
+                    onChange={(e) => setFormData({ ...formData, time: e.target.value })}
+                    placeholder="e.g. 15:45"
+                    className="w-full px-3 py-2 text-xs sm:text-sm bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-emerald-500 font-medium"
                   />
                 </div>
 
                 {/* Payment Method */}
-                <div className="space-y-1">
+                <div className="space-y-1 sm:col-span-2">
                   <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
                     Payment Method
                   </label>
@@ -520,6 +570,58 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
                     <option value="Apple Pay">Apple Pay / Mada</option>
                     <option value="Other">Other</option>
                   </select>
+                </div>
+              </div>
+
+              {/* Upload Information Panel - Malaysia Time (Asia/Kuala_Lumpur) */}
+              <div className="p-3.5 bg-gradient-to-r from-emerald-50/80 to-teal-50/50 dark:from-emerald-950/30 dark:to-teal-950/20 rounded-xl border border-emerald-200/80 dark:border-emerald-800/60 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-900 dark:text-emerald-200">
+                    <Clock className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                    <span>Upload Timestamp & Audit (Malaysia Time • Asia/Kuala_Lumpur)</span>
+                  </div>
+                  <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300 border border-emerald-300/60 dark:border-emerald-700">
+                    UTC+8 (MYT)
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                  {/* Upload Date */}
+                  <div className="bg-white/90 dark:bg-slate-800/90 p-2.5 rounded-lg border border-slate-200/80 dark:border-slate-700 shadow-2xs">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                      Upload Date
+                    </span>
+                    <span className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white mt-0.5 block">
+                      {formatMalaysiaDate(uploadIso)}
+                    </span>
+                  </div>
+
+                  {/* Upload Time */}
+                  <div className="bg-white/90 dark:bg-slate-800/90 p-2.5 rounded-lg border border-slate-200/80 dark:border-slate-700 shadow-2xs">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                      Upload Time
+                    </span>
+                    <span className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white mt-0.5 block">
+                      {formatMalaysiaTime(uploadIso, true)}
+                    </span>
+                  </div>
+
+                  {/* Upload File Ref # */}
+                  <div className="bg-white/90 dark:bg-slate-800/90 p-2.5 rounded-lg border border-slate-200/80 dark:border-slate-700 shadow-2xs">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                      Upload File Ref #
+                    </span>
+                    <span className="text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400 mt-0.5 block truncate">
+                      {formData.uploadRefNo || "—"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                  <CalendarCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  <span>
+                    Upload timestamp is automatically recorded in UTC and converted to Malaysia local time. It is preserved during edits and reprocessing.
+                  </span>
                 </div>
               </div>
 
@@ -931,7 +1033,7 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && customCatInput.trim()) {
                     const newCat = customCatInput.trim();
-                    const updated = saveCustomCategory(newCat);
+                    const updated = saveCustomCategory(newCat, user?.id);
                     setCategories(updated);
                     setFormData((prev) => ({ ...prev, category: newCat }));
                     setCustomCatInput("");
@@ -952,7 +1054,7 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
                   onClick={() => {
                     if (customCatInput.trim()) {
                       const newCat = customCatInput.trim();
-                      const updated = saveCustomCategory(newCat);
+                      const updated = saveCustomCategory(newCat, user?.id);
                       setCategories(updated);
                       setFormData((prev) => ({ ...prev, category: newCat }));
                       setCustomCatInput("");
@@ -989,7 +1091,7 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && customChoiceInput.trim()) {
                     const newChoice = customChoiceInput.trim();
-                    const updated = saveCustomProductChoice(newChoice);
+                    const updated = saveCustomProductChoice(newChoice, user?.id);
                     setProductChoices(updated);
                     if (targetItemIdxForChoice !== null) {
                       handleItemChange(targetItemIdxForChoice, "productChoice", newChoice);
@@ -1017,7 +1119,7 @@ export const ReceiptDetailModal: React.FC<ReceiptDetailModalProps> = ({
                   onClick={() => {
                     if (customChoiceInput.trim()) {
                       const newChoice = customChoiceInput.trim();
-                      const updated = saveCustomProductChoice(newChoice);
+                      const updated = saveCustomProductChoice(newChoice, user?.id);
                       setProductChoices(updated);
                       if (targetItemIdxForChoice !== null) {
                         handleItemChange(targetItemIdxForChoice, "productChoice", newChoice);

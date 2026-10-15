@@ -10,6 +10,7 @@ export const INITIAL_RECEIPTS: ExpenseReceipt[] = [
     storePhone: "0540883720",
     taxId: "310423670800003",
     invoiceNo: "2025/00008/04",
+    uploadRefNo: "UPL-20250518-001",
     date: "2025-05-18",
     time: "15:45",
     currency: "SAR",
@@ -34,6 +35,7 @@ export const INITIAL_RECEIPTS: ExpenseReceipt[] = [
     thumbnailUrl: "https://images.unsplash.com/photo-1554415707-6e8cfc93fe23?w=160&auto=format&fit=crop&q=80",
     notes: "Authentic preloaded entry representing the uploaded receipt image screenshot.",
     createdAt: 1716047100000,
+    uploadedAt: new Date(1716047100000).toISOString(),
   },
   {
     id: "rec_demo_2",
@@ -44,6 +46,7 @@ export const INITIAL_RECEIPTS: ExpenseReceipt[] = [
     storePhone: "920004123",
     taxId: "300051234400003",
     invoiceNo: "TXN-9021-X",
+    uploadRefNo: "UPL-20250603-002",
     date: "2025-06-03",
     time: "11:20",
     currency: "SAR",
@@ -78,6 +81,7 @@ export const INITIAL_RECEIPTS: ExpenseReceipt[] = [
     thumbnailUrl: "https://images.unsplash.com/photo-1593784991095-a205069470b6?w=160&auto=format&fit=crop&q=80",
     notes: "Corporate boardroom display television upgrade receipt.",
     createdAt: 1717413600000,
+    uploadedAt: new Date(1717413600000).toISOString(),
   },
   {
     id: "rec_demo_3",
@@ -88,6 +92,7 @@ export const INITIAL_RECEIPTS: ExpenseReceipt[] = [
     storePhone: "0148482200",
     taxId: "300481239900003",
     invoiceNo: "S-520339A",
+    uploadRefNo: "UPL-20250610-003",
     date: "2025-06-10",
     time: "20:15",
     currency: "SAR",
@@ -122,6 +127,7 @@ export const INITIAL_RECEIPTS: ExpenseReceipt[] = [
     thumbnailUrl: "https://images.unsplash.com/photo-1542838132-92c53300491e?w=160&auto=format&fit=crop&q=80",
     notes: "Kitchen supplies and office pantry restoration catering.",
     createdAt: 1718043300000,
+    uploadedAt: new Date(1718043300000).toISOString(),
   },
   {
     id: "rec_demo_4",
@@ -130,6 +136,7 @@ export const INITIAL_RECEIPTS: ExpenseReceipt[] = [
     storeAddress: "Digital Billing Portal, Medina Sector",
     originalStoreAddress: "بوابة الفواتير الرقمية، قطاع المدينة",
     invoiceNo: "UTIL-MAD-1120",
+    uploadRefNo: "UPL-20250530-001",
     date: "2025-05-30",
     currency: "SAR",
     items: [
@@ -153,6 +160,7 @@ export const INITIAL_RECEIPTS: ExpenseReceipt[] = [
     thumbnailUrl: "https://images.unsplash.com/photo-1473341304170-971dccb5ac1e?w=160&auto=format&fit=crop&q=80",
     notes: "Monthly utility invoice cleared online.",
     createdAt: 1717070400000,
+    uploadedAt: new Date(1717070400000).toISOString(),
   },
 ];
 

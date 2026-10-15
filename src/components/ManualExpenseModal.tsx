@@ -146,6 +146,7 @@ export const ManualExpenseModal: React.FC<ManualExpenseModalProps> = ({
       vatTotal: Number(vatTotal.toFixed(2)),
       grandTotal: Number(grandTotal.toFixed(2)),
       createdAt: Date.now(),
+      uploadedAt: new Date().toISOString(),
     };
 
     onAdd(newReceipt);
